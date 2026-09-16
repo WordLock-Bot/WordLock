@@ -16,6 +16,9 @@ import {
   Menu,
   Send,
   Loader2,
+  MessageSquare,
+  BadgeCheck,
+  History,
 } from "lucide-react";
 import { Sidebar, type SidebarItem } from "@/components/Sidebar";
 import { api, ApiError } from "@/lib/api";
@@ -36,6 +39,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: "/admin/servers", label: t("admin.servers"), icon: Server },
     { href: "/admin/stats", label: t("admin.stats"), icon: BarChart3 },
     { href: "/admin/incidents", label: t("admin.incidents"), icon: ShieldAlert },
+    { href: "/admin/security", label: t("admin.security"), icon: ShieldAlert },
+    { href: "/admin/tickets", label: t("admin.tickets"), icon: MessageSquare },
+    { href: "/admin/verify", label: t("admin.verify"), icon: BadgeCheck },
+    { href: "/admin/history", label: t("admin.history"), icon: History },
     { href: "/admin/profile", label: t("admin.profile"), icon: UserCog },
     { href: "/admin/updates", label: t("admin.updates"), icon: Rocket },
     { href: "/admin/lists", label: t("admin.lists"), icon: FileText },

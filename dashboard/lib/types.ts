@@ -71,6 +71,13 @@ export interface ServerConfig {
   anti_nuke_config: AntiNukeConfig;
   bot_version: string | null;
   member_count: number;
+  welcome_channel_id: string | null;
+  welcome_message: string;
+  leave_channel_id: string | null;
+  leave_message: string;
+  phishing_enabled: boolean;
+  phishing_action: "delete" | "warn" | "timeout" | "log";
+  phishing_config: Record<string, unknown>;
 }
 
 export interface Word {
@@ -135,6 +142,7 @@ export interface AdminOverview {
   violations_today: number;
   violations_total: number;
   error_count: number;
+  open_tickets?: number;
   version: string;
   maintenance_mode: boolean;
   started_at: string | null;
@@ -192,6 +200,32 @@ export interface AdminStats {
   servers: number;
   active_users: number;
   violations_total: number;
+}
+
+export interface VerifyGuildStat {
+  guild_id: string;
+  guild_name: string | null;
+  verified: number;
+  locked: number;
+}
+
+export interface VerifyEvent {
+  id: number;
+  guild_id: string;
+  guild_name: string | null;
+  user_id: string;
+  action: string;
+  created_at: string;
+}
+
+export interface VerifyOverview {
+  total: number;
+  today: number;
+  last_7d: number;
+  last_30d: number;
+  locked: number;
+  per_guild: VerifyGuildStat[];
+  recent: VerifyEvent[];
 }
 
 export interface WordListInfo {
@@ -254,4 +288,102 @@ export interface Incident {
   created_at: string;
   resolved_at: string | null;
   guild_name?: string;
+}
+
+export interface Ticket {
+  id: number;
+  type: string;
+  subject: string;
+  message: string;
+  sender_name: string;
+  sender_email: string;
+  sender_id: string | null;
+  guild_id: string | null;
+  status: string;
+  assigned_to: string | null;
+  admin_reply: string | null;
+  replied_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiscordTicket {
+  id: number;
+  guild_id: string;
+  channel_id: string | null;
+  creator_id: string;
+  status: string;
+  claimed_by: string | null;
+  transcript_id: number | null;
+  created_at: string;
+  closed_at: string | null;
+  closed_by: string | null;
+}
+
+export interface TicketTranscript {
+  id: number;
+  ticket_id: number | null;
+  html: string;
+  created_at: string;
+}
+
+export interface InvitePoint {
+  date: string;
+  n: number;
+}
+
+export interface InviteStats {
+  total: number;
+  recent: number;
+  series: InvitePoint[];
+}
+
+export interface InviteLeaderboardEntry {
+  inviter_id: number | string;
+  invites: number;
+}
+
+export interface InvitesOverview {
+  stats: InviteStats;
+  leaderboard: InviteLeaderboardEntry[];
+}
+
+export interface AdminInvites {
+  leaderboard: InviteLeaderboardEntry[];
+  total: number;
+}
+
+export interface SecurityStaff {
+  discord_id: string;
+  role: string;
+}
+
+export interface SecurityIncident {
+  id: number;
+  guild_id: string;
+  kind: string;
+  severity: string;
+  status: string;
+  created_at: string;
+}
+
+export interface AdminSecurity {
+  staff: SecurityStaff[];
+  whitelist_ids: number[];
+  maintenance_mode: boolean;
+  push_subscribers: number;
+  incidents: SecurityIncident[];
+}
+
+export interface ScheduledMessage {
+  id: number;
+  guild_id: string;
+  channel_id: string | number;
+  content: string;
+  interval_minutes: number | null;
+  daily_hhmm: string | null;
+  run_at: string | null;
+  enabled: boolean;
+  created_by: string | null;
+  created_at: string;
 }

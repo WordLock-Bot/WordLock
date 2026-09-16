@@ -46,6 +46,11 @@ GIT_USER_EMAIL = os.environ.get("GIT_USER_EMAIL", "tunnel-watcher@users.noreply.
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 API_HEALTH_URL = os.environ.get("API_HEALTH_URL", "http://wordlock-api:8000/api/health")
+
+VERCEL_TOKEN = os.environ.get("VERCEL_TOKEN", "")
+VERCEL_PROJECT_ID = os.environ.get("VERCEL_PROJECT_ID", "")
+VERCEL_DEPLOY_HOOK_URL = os.environ.get("VERCEL_DEPLOY_HOOK_URL", "")
+VERCEL_CONSOLE_API_URL = os.environ.get("VERCEL_CONSOLE_API_URL", "https://api.vercel.com")
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "30"))
 DOWN_THRESHOLD = int(os.environ.get("DOWN_THRESHOLD", "300"))
 RESEND_INTERVAL = int(os.environ.get("RESEND_INTERVAL", "1800"))
@@ -125,6 +130,69 @@ def push_url(url: str) -> None:
     log.info("Done.")
 
 
+def vercel_configured() -> bool:
+    if not (VERCEL_TOKEN and VERCEL_PROJECT_ID and VERCEL_DEPLOY_HOOK_URL):
+        log.info(
+            "Vercel automation missing (need VERCEL_TOKEN, VERCEL_PROJECT_ID, "
+            "VERCEL_DEPLOY_HOOK_URL) — skipping dashboard redeploy"
+        )
+        return False
+    return True
+
+
+def _vercel_headers() -> dict:
+    return {"Authorization": f"Bearer {VERCEL_TOKEN}"}
+
+
+def vercel_set_env_url(url: str) -> None:
+    """Set NEXT_PUBLIC_API_URL (production) on the Vercel project."""
+    with httpx.Client(timeout=30) as client:
+        resp = client.get(
+            f"{VERCEL_CONSOLE_API_URL}/v9/projects/{VERCEL_PROJECT_ID}/env",
+            headers=_vercel_headers(),
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"list env failed: {resp.status_code} {resp.text[:200]}")
+        existing = None
+        for item in resp.json() or []:
+            if item.get("key") == "NEXT_PUBLIC_API_URL" and "production" in (item.get("target", [])):
+                existing = item
+                break
+        if existing and existing.get("value") == url:
+            log.info("Vercel NEXT_PUBLIC_API_URL already up to date.")
+            return
+        if existing:
+            del_resp = client.delete(
+                f"{VERCEL_CONSOLE_API_URL}/v9/projects/{VERCEL_PROJECT_ID}/env/{existing['id']}",
+                headers=_vercel_headers(),
+            )
+            if del_resp.status_code not in (200, 202, 204):
+                raise RuntimeError(f"delete env failed: {del_resp.status_code} {del_resp.text[:200]}")
+            log.info("Removed old NEXT_PUBLIC_API_URL (%s)", existing.get("value"))
+        add_resp = client.post(
+            f"{VERCEL_CONSOLE_API_URL}/v9/projects/{VERCEL_PROJECT_ID}/env",
+            headers=_vercel_headers(),
+            json={
+                "key": "NEXT_PUBLIC_API_URL",
+                "value": url,
+                "type": "plain",
+                "target": ["production"],
+            },
+        )
+        if add_resp.status_code not in (200, 201, 202):
+            raise RuntimeError(f"add env failed: {add_resp.status_code} {add_resp.text[:200]}")
+        log.info("Vercel NEXT_PUBLIC_API_URL set to %s", url)
+
+
+def vercel_trigger_deploy() -> None:
+    """Trigger a redeploy (deploy hook) so the dashboard rebuilds with the new URL."""
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(VERCEL_DEPLOY_HOOK_URL)
+        if resp.status_code != 200:
+            raise RuntimeError(f"deploy hook failed: {resp.status_code} {resp.text[:200]}")
+        log.info("Vercel deploy hook triggered (job=%s)", (resp.json() or {}).get("job", "?"))
+
+
 async def url_loop() -> None:
     last = ""
     while True:
@@ -134,6 +202,12 @@ async def url_loop() -> None:
                 log.info("Detected tunnel URL: %s", url)
                 last = url
                 await asyncio.to_thread(push_url, url)
+                if vercel_configured():
+                    try:
+                        await asyncio.to_thread(vercel_set_env_url, url)
+                        await asyncio.to_thread(vercel_trigger_deploy)
+                    except Exception:
+                        log.exception("Vercel redeploy update failed")
         except Exception:
             log.exception("URL propagation failed")
         await asyncio.sleep(URL_INTERVAL)

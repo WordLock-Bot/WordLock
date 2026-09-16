@@ -11,11 +11,28 @@ from ..events.security import guild_active
 LANGUAGES = ["en", "de"]
 
 
+def manage_guild() -> app_commands.Check:
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if not interaction.guild:
+            raise app_commands.NoPrivateMessage()
+        user = interaction.user
+        if user.id in interaction.client.owner_ids:
+            return True
+        if isinstance(user, discord.Member) and user.guild_permissions.manage_guild:
+            return True
+        raise app_commands.CheckFailure(
+            "You need the `Manage Guild` permission to use this command."
+        )
+
+    return app_commands.check(predicate)
+
+
 class SettingsCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(name="settings", description="Shows the WordLock settings of this server")
+    @manage_guild()
     @app_commands.default_permissions(manage_guild=True)
     @guild_active()
     async def settings(self, interaction: discord.Interaction) -> None:
@@ -58,6 +75,7 @@ class SettingsCommands(commands.Cog):
         return ch.name if ch else str(channel_id)
 
     @app_commands.command(name="settings-set", description="Changes a WordLock setting")
+    @manage_guild()
     @app_commands.default_permissions(manage_guild=True)
     @guild_active()
     @app_commands.choices(
@@ -102,6 +120,7 @@ class SettingsCommands(commands.Cog):
         )
 
     @app_commands.command(name="settings-logchannel", description="Sets the log channel")
+    @manage_guild()
     @app_commands.default_permissions(manage_guild=True)
     @guild_active()
     async def settings_logchannel(
@@ -113,6 +132,7 @@ class SettingsCommands(commands.Cog):
         )
 
     @app_commands.command(name="settings-actions", description="Toggles actions on/off")
+    @manage_guild()
     @app_commands.default_permissions(manage_guild=True)
     @guild_active()
     @app_commands.choices(
@@ -136,6 +156,7 @@ class SettingsCommands(commands.Cog):
         )
 
     @app_commands.command(name="settings-lists", description="Enables/disables standard lists")
+    @manage_guild()
     @app_commands.default_permissions(manage_guild=True)
     @guild_active()
     @app_commands.choices(

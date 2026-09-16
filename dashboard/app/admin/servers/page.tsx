@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Server, RefreshCw, UserX, Link as LinkIcon, Copy, Check, Search, ArrowUpRight } from "lucide-react";
+import { Server, RefreshCw, UserX, Trash2, Link as LinkIcon, Copy, Check, Search, ArrowUpRight } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminServer } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -87,6 +87,16 @@ export default function AdminServers() {
     if (!window.confirm(`${t("adServ.kickConfirm")} "${s.name || s.guild_id}"?`)) return;
     try {
       await api(`/api/admin/servers/${s.guild_id}/kick`, { method: "POST" });
+      reload();
+    } catch (e) {
+      alert((e as Error).message);
+    }
+  };
+
+  const forceRemove = async (s: AdminServer) => {
+    if (!window.confirm(`${t("adServ.forceRemoveConfirm")} "${s.name || s.guild_id}"?`)) return;
+    try {
+      await api(`/api/admin/servers/${s.guild_id}/force-remove`, { method: "POST" });
       reload();
     } catch (e) {
       alert((e as Error).message);
@@ -242,6 +252,13 @@ export default function AdminServers() {
                         title={t("adServ.kick")}
                       >
                         <UserX className="h-3 w-3" /> {t("adServ.kick")}
+                      </button>
+                      <button
+                        onClick={() => forceRemove(s)}
+                        className="btn-danger px-2 py-1 text-xs"
+                        title={t("adServ.forceRemove")}
+                      >
+                        <Trash2 className="h-3 w-3" /> {t("adServ.forceRemove")}
                       </button>
                     </div>
                   </td>

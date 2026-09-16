@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS servers (
     guild_id         BIGINT PRIMARY KEY,
     name             TEXT DEFAULT '',
     owner_id         BIGINT,
+    inviter_id       BIGINT,
     status           TEXT DEFAULT 'active',
     language         TEXT DEFAULT 'en',
     mod_level        INTEGER DEFAULT 3,
@@ -81,6 +82,16 @@ CREATE TABLE IF NOT EXISTS servers (
     created_at       TIMESTAMPTZ DEFAULT now(),
     updated_at       TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS guild_history (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    name       TEXT DEFAULT '',
+    joined_at  TIMESTAMPTZ NOT NULL,
+    left_at    TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_guild_history_guild ON guild_history (guild_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS custom_words (
     id          SERIAL PRIMARY KEY,
@@ -202,6 +213,20 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     UNIQUE (user_id, endpoint)
 );
 
+CREATE TABLE IF NOT EXISTS guild_invites (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    guild_id    BIGINT NOT NULL,
+    discord_id  BIGINT NOT NULL,
+    invited_by  BIGINT NOT NULL,
+    role        TEXT NOT NULL DEFAULT 'moderator',
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (guild_id, discord_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_guild_invites_guild ON guild_invites (guild_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_guild_invites_user ON guild_invites (discord_id, guild_id);
+
 CREATE INDEX IF NOT EXISTS idx_violations_guild ON violations (guild_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_created ON logs (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_custom_words_guild ON custom_words (guild_id);
@@ -212,6 +237,7 @@ ALTER TABLE updates ADD COLUMN IF NOT EXISTS announced BOOLEAN DEFAULT FALSE;
 ALTER TABLE updates ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'announce';
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS name TEXT DEFAULT '';
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS owner_id BIGINT;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS inviter_id BIGINT;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en';
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS mod_level INTEGER DEFAULT 3;
@@ -233,8 +259,16 @@ ALTER TABLE servers ADD COLUMN IF NOT EXISTS anti_spam_enabled BOOLEAN DEFAULT F
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS anti_nuke_enabled BOOLEAN DEFAULT FALSE;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS anti_spam_config JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS anti_nuke_config JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS welcome_channel_id BIGINT;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS welcome_message TEXT;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS leave_channel_id BIGINT;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS leave_message TEXT;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS phishing_enabled BOOLEAN DEFAULT FALSE;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS phishing_action TEXT DEFAULT 'delete';
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS phishing_config JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE ticket_config ADD COLUMN IF NOT EXISTS panel_needs_deploy BOOLEAN DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS invites (
     guild_id   BIGINT PRIMARY KEY,
@@ -286,6 +320,129 @@ CREATE TABLE IF NOT EXISTS service_downtime (
     last_notified  TIMESTAMPTZ,
     updated_at     TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS ticket_config (
+    guild_id             BIGINT PRIMARY KEY,
+    panel_channel_id     BIGINT,
+    panel_message_id     BIGINT,
+    category_id          BIGINT,
+    welcome_message      TEXT DEFAULT 'Hallo {mention}! Willkommen in deinem Ticket. Das Team kümmert sich gleich um dich.',
+    ticket_name_format   TEXT DEFAULT 'ticket-{user}',
+    support_role_ids     JSONB DEFAULT '[]',
+    max_open             INTEGER DEFAULT 1,
+    enabled              BOOLEAN DEFAULT FALSE,
+    created_at           TIMESTAMPTZ DEFAULT now(),
+    updated_at           TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS discord_tickets (
+    id            SERIAL PRIMARY KEY,
+    guild_id      BIGINT NOT NULL,
+    channel_id    BIGINT,
+    creator_id    BIGINT NOT NULL,
+    status        TEXT DEFAULT 'open',
+    claimed_by    BIGINT,
+    transcript_id BIGINT,
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    closed_at     TIMESTAMPTZ,
+    closed_by     BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_discord_tickets_guild ON discord_tickets (guild_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_discord_tickets_open ON discord_tickets (guild_id, creator_id) WHERE status = 'open';
+
+CREATE TABLE IF NOT EXISTS ticket_transcripts (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    ticket_id  BIGINT,
+    channel_id BIGINT,
+    html       TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS verify_config (
+    guild_id             BIGINT PRIMARY KEY,
+    panel_channel_id     BIGINT,
+    panel_message_id     BIGINT,
+    verify_role_id       BIGINT,
+    unverified_role_id   BIGINT,
+    log_channel_id       BIGINT,
+    welcome_message      TEXT DEFAULT '✅ Du wurdest erfolgreich verifiziert. Willkommen, {mention}!',
+    dm_message           TEXT DEFAULT 'Willkommen auf {guild}! Du bist jetzt als {user} verifiziert.',
+    enabled              BOOLEAN DEFAULT FALSE,
+    created_at           TIMESTAMPTZ DEFAULT now(),
+    updated_at           TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS verify_events (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    user_id    BIGINT NOT NULL,
+    action     TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_verify_events_guild ON verify_events (guild_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    type          TEXT NOT NULL DEFAULT 'contact',
+    subject       TEXT NOT NULL,
+    message       TEXT NOT NULL,
+    sender_name   TEXT NOT NULL,
+    sender_email  TEXT NOT NULL,
+    sender_id     BIGINT,
+    guild_id      BIGINT,
+    status        TEXT NOT NULL DEFAULT 'open',
+    assigned_to   TEXT,
+    admin_reply   TEXT,
+    replied_at    TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    updated_at    TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at DESC);
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS tickets_enabled BOOLEAN DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS ticket_messages (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    ticket_id   BIGINT NOT NULL,
+    author_type TEXT NOT NULL DEFAULT 'user',
+    author_name TEXT,
+    content     TEXT NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_messages_ticket ON ticket_messages (ticket_id, created_at);
+
+CREATE TABLE IF NOT EXISTS phishing_domains (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL DEFAULT 0,
+    domain     TEXT NOT NULL,
+    kind       TEXT NOT NULL DEFAULT 'block',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (guild_id, domain, kind)
+);
+
+CREATE TABLE IF NOT EXISTS invite_track (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    inviter_id BIGINT NOT NULL,
+    invited_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_invite_track_guild ON invite_track (guild_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS scheduled_messages (
+    id               SERIAL PRIMARY KEY,
+    guild_id         BIGINT NOT NULL,
+    channel_id       BIGINT NOT NULL,
+    content          TEXT NOT NULL,
+    interval_minutes INTEGER,
+    daily_hhmm       TEXT,
+    run_at           TIMESTAMPTZ,
+    enabled          BOOLEAN DEFAULT TRUE,
+    created_by       BIGINT,
+    created_at       TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_messages_run ON scheduled_messages (enabled, run_at);
 """
 
 
@@ -375,7 +532,8 @@ class Database:
 
     async def list_developers(self) -> List[dict]:
         return await self._fetch(
-            "SELECT * FROM users WHERE role IN ('owner','developer','moderator') ORDER BY role"
+            "SELECT discord_id, username, role, created_at, updated_at FROM users "
+            "WHERE role IN ('owner','developer','moderator') ORDER BY role"
         )
 
     # -- servers ---------------------------------------------------------
@@ -395,6 +553,141 @@ class Database:
 
     async def delete_server(self, guild_id: int) -> None:
         await self._execute("DELETE FROM servers WHERE guild_id = $1", guild_id)
+
+    async def list_guild_history(self, limit: int = 200) -> List[dict]:
+        return await self._fetch(
+            "SELECT * FROM guild_history ORDER BY id DESC LIMIT $1", limit
+        )
+
+    async def guild_history_total(self) -> int:
+        return int(
+            await self._fetchval("SELECT COUNT(*) FROM guild_history") or 0
+        )
+
+    async def guild_history_active(self) -> int:
+        return int(
+            await self._fetchval(
+                "SELECT COUNT(*) FROM guild_history WHERE left_at IS NULL"
+            )
+            or 0
+        )
+
+    async def backfill_guild_history(self) -> None:
+        """Seed history entries for the currently active servers so the
+        history view shows them even if the bot never emitted a join event
+        after this feature shipped."""
+        rows = await self._fetch(
+            "SELECT guild_id, name, created_at FROM servers WHERE status = 'active'"
+        )
+        for row in rows:
+            existing = await self._fetchrow(
+                "SELECT id FROM guild_history WHERE guild_id = $1 ORDER BY id DESC LIMIT 1",
+                row["guild_id"],
+            )
+            if existing:
+                continue
+            await self._execute(
+                "INSERT INTO guild_history (guild_id, name, joined_at) VALUES ($1, $2, $3)",
+                row["guild_id"], row.get("name") or "", row.get("created_at") or None,
+            )
+
+    # -- panel invites (co-moderators) ----------------------------------
+
+    async def list_guild_invites(self, guild_id: int) -> List[dict]:
+        """All users invited to moderate/view this guild's panel."""
+        return await self._fetch(
+            """
+            SELECT gi.*,
+                   (u.username IS NOT NULL) AS known,
+                   u.username
+            FROM guild_invites gi
+            LEFT JOIN users u ON u.discord_id = gi.discord_id
+            WHERE gi.guild_id = $1
+            ORDER BY gi.created_at DESC
+            """,
+            guild_id,
+        )
+
+    async def has_guild_invite(self, guild_id: int, discord_id: int) -> bool:
+        row = await self._fetchrow(
+            "SELECT id FROM guild_invites WHERE guild_id = $1 AND discord_id = $2",
+            guild_id,
+            discord_id,
+        )
+        return row is not None
+
+    async def add_guild_invite(
+        self,
+        guild_id: int,
+        discord_id: int,
+        invited_by: int,
+        role: str = "moderator",
+    ) -> Optional[dict]:
+        row = await self._fetchrow(
+            """
+            INSERT INTO guild_invites (guild_id, discord_id, invited_by, role)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (guild_id, discord_id)
+            DO UPDATE SET role = EXCLUDED.role, invited_by = EXCLUDED.invited_by, updated_at = now()
+            RETURNING *
+            """,
+            guild_id,
+            discord_id,
+            invited_by,
+            role,
+        )
+        return row
+
+    async def remove_guild_invite(self, guild_id: int, discord_id: int) -> bool:
+        result = await self._fetchrow(
+            "DELETE FROM guild_invites WHERE guild_id = $1 AND discord_id = $2 RETURNING id",
+            guild_id,
+            discord_id,
+        )
+        return result is not None
+
+    async def guild_invites_for_user(self, discord_id: int) -> List[dict]:
+        """Guild ids this user was invited to moderate via invitations."""
+        return await self._fetch(
+            "SELECT guild_id, role FROM guild_invites WHERE discord_id = $1 ORDER BY created_at DESC",
+            discord_id,
+        )
+
+
+    async def force_remove_server(self, guild_id: int) -> None:
+        """Delete a server and ALL associated data so it is as if WordLock
+        was never on that guild (no Discord call, no leftover rows)."""
+        async with self._pool.acquire() as conn:
+            for table in (
+                "servers",
+                "custom_words",
+                "standard_word_overrides",
+                "violations",
+                "warnings",
+                "incidents",
+                "invites",
+                "logs",
+                "tickets",
+                "discord_tickets",
+                "ticket_transcripts",
+                "ticket_config",
+            ):
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE guild_id = $1", guild_id
+                )
+
+    async def reset_database(self) -> None:
+        """Completely wipe the database and recreate the schema + seed rows."""
+        async with self._pool.acquire() as conn:
+            await conn.execute("DROP SCHEMA public CASCADE")
+            await conn.execute("CREATE SCHEMA public")
+            await conn.execute(_SCHEMA)
+            count = await conn.fetchval("SELECT COUNT(*) FROM team_members")
+            if count == 0:
+                await conn.execute(
+                    "INSERT INTO team_members (name, role, sort_order) "
+                    "VALUES ('DevCoder', 'Owner/Head developer', 0)"
+                )
 
     async def all_servers(self) -> List[dict]:
         return await self._fetch("SELECT * FROM servers ORDER BY created_at ASC")
@@ -552,6 +845,113 @@ class Database:
         return int(
             await self._fetchval("SELECT COUNT(DISTINCT user_id) FROM violations")
         )
+
+    # -- tickets -----------------------------------------------------------
+
+    async def add_ticket(
+        self,
+        ticket_type: str,
+        subject: str,
+        message: str,
+        sender_name: str,
+        sender_email: str,
+        sender_id: Optional[int] = None,
+        guild_id: Optional[int] = None,
+    ) -> dict:
+        return await self._fetchrow(
+            """
+            INSERT INTO tickets (type, subject, message, sender_name, sender_email, sender_id, guild_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING *
+            """,
+            ticket_type, subject, message, sender_name, sender_email, sender_id, guild_id,
+        )
+
+    async def list_tickets(
+        self,
+        status: Optional[str] = None,
+        ticket_type: Optional[str] = None,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[dict]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        idx = 1
+        if status:
+            conditions.append(f"status = ${idx}")
+            params.append(status)
+            idx += 1
+        if ticket_type:
+            conditions.append(f"type = ${idx}")
+            params.append(ticket_type)
+            idx += 1
+        if search:
+            conditions.append(f"(subject ILIKE ${idx} OR message ILIKE ${idx} OR sender_name ILIKE ${idx})")
+            params.append(f"%{search}%")
+            idx += 1
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        return await self._fetch(
+            f"SELECT * FROM tickets{where} ORDER BY created_at DESC LIMIT ${idx} OFFSET ${idx + 1}",
+            *params, limit, offset,
+        )
+
+    async def get_ticket(self, ticket_id: int) -> Optional[dict]:
+        return await self._fetchrow("SELECT * FROM tickets WHERE id = $1", ticket_id)
+
+    async def update_ticket(self, ticket_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        fields["updated_at"] = datetime.now(timezone.utc)
+        cols = ", ".join(f"{k} = ${i + 1}" for i, k in enumerate(fields))
+        await self._execute(
+            f"UPDATE tickets SET {cols} WHERE id = ${len(fields) + 1}",
+            *fields.values(), ticket_id,
+        )
+
+    async def reply_ticket(self, ticket_id: int, admin_reply: str, assigned_to: str) -> None:
+        await self._execute(
+            "UPDATE tickets SET admin_reply = $2, assigned_to = $3, replied_at = now(), updated_at = now() WHERE id = $1",
+            ticket_id, admin_reply, assigned_to,
+        )
+        await self.add_ticket_message(
+            ticket_id, "admin", assigned_to, admin_reply,
+        )
+
+    async def delete_ticket(self, ticket_id: int) -> None:
+        await self._execute("DELETE FROM tickets WHERE id = $1", ticket_id)
+        await self._execute("DELETE FROM ticket_messages WHERE ticket_id = $1", ticket_id)
+
+    async def list_my_tickets(self, sender_id: int) -> List[dict]:
+        return await self._fetch(
+            "SELECT * FROM tickets WHERE sender_id = $1 ORDER BY created_at DESC",
+            sender_id,
+        )
+
+    async def add_ticket_message(
+        self,
+        ticket_id: int,
+        author_type: str,
+        author_name: Optional[str],
+        content: str,
+    ) -> dict:
+        return await self._fetchrow(
+            "INSERT INTO ticket_messages (ticket_id, author_type, author_name, content) "
+            "VALUES ($1, $2, $3, $4) RETURNING *",
+            ticket_id, author_type, author_name, content,
+        )
+
+    async def list_ticket_messages(self, ticket_id: int) -> List[dict]:
+        return await self._fetch(
+            "SELECT * FROM ticket_messages WHERE ticket_id = $1 ORDER BY created_at, id",
+            ticket_id,
+        )
+
+    async def open_ticket_count(self) -> int:
+        return int(await self._fetchval("SELECT COUNT(*) FROM tickets WHERE status = 'open'"))
+
+    async def ticket_count(self) -> int:
+        return int(await self._fetchval("SELECT COUNT(*) FROM tickets"))
 
     async def server_growth(self, days: int = 30) -> List[dict]:
         return await self._fetch(
@@ -948,4 +1348,289 @@ class Database:
             service,
             down_since,
             last_notified,
+        )
+
+    # -- discord tickets --------------------------------------------------
+
+    async def get_ticket_config(self, guild_id: int) -> Optional[dict]:
+        return await self._fetchrow("SELECT * FROM ticket_config WHERE guild_id = $1", guild_id)
+
+    async def set_ticket_config(self, guild_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ${i + 1}" for i, k in enumerate(fields))
+        await self._execute(
+            f"""
+            INSERT INTO ticket_config (guild_id, {cols})
+            VALUES (${len(fields) + 1}, {", ".join(f"${i + 1}" for i in range(len(fields)))})
+            ON CONFLICT (guild_id) DO UPDATE SET
+                {", ".join(f"{k} = EXCLUDED.{k}" for k in fields)},
+                updated_at = now()
+            """,
+            *fields.values(), guild_id,
+        )
+
+    async def all_ticket_configs(self) -> List[dict]:
+        return await self._fetch("SELECT * FROM ticket_config WHERE enabled = TRUE")
+
+    async def pending_ticket_deploys(self) -> List[dict]:
+        return await self._fetch(
+            "SELECT * FROM ticket_config WHERE panel_needs_deploy = TRUE ORDER BY updated_at"
+        )
+
+    async def clear_ticket_deploy(self, guild_id: int) -> None:
+        await self._execute(
+            "UPDATE ticket_config SET panel_needs_deploy = FALSE, updated_at = now() WHERE guild_id = $1",
+            guild_id,
+        )
+
+    # -- verify system -----------------------------------------------------
+
+    async def get_verify_config(self, guild_id: int) -> Optional[dict]:
+        return await self._fetchrow("SELECT * FROM verify_config WHERE guild_id = $1", guild_id)
+
+    async def set_verify_config(self, guild_id: int, **fields: Any) -> None:
+        if not fields:
+            return
+        cols = ", ".join(f"{k} = ${i + 1}" for i, k in enumerate(fields))
+        await self._execute(
+            f"""
+            INSERT INTO verify_config (guild_id, {cols})
+            VALUES (${len(fields) + 1}, {", ".join(f"${i + 1}" for i in range(len(fields)))})
+            ON CONFLICT (guild_id) DO UPDATE SET
+                {", ".join(f"{k} = EXCLUDED.{k}" for k in fields)},
+                updated_at = now()
+            """,
+            *fields.values(), guild_id,
+        )
+
+    async def all_verify_configs(self) -> List[dict]:
+        return await self._fetch("SELECT * FROM verify_config WHERE enabled = TRUE")
+
+    async def log_verify_event(self, guild_id: int, user_id: int, action: str) -> None:
+        await self._execute(
+            "INSERT INTO verify_events (guild_id, user_id, action) VALUES ($1, $2, $3)",
+            guild_id, user_id, action,
+        )
+
+    async def verify_stat(self, guild_id: int, days: int = 30) -> int:
+        row = await self._fetchrow(
+            "SELECT COUNT(*) AS n FROM verify_events "
+            "WHERE guild_id = $1 AND action = 'verified' AND created_at > now() - make_interval(days => $2)",
+            guild_id, days,
+        )
+        return int(row["n"]) if row and row["n"] else 0
+
+    async def verify_overview(self, recent_limit: int = 50) -> dict:
+        async def _n(sql: str, *args: Any) -> int:
+            row = await self._fetchrow(sql, *args)
+            return int(row["n"]) if row and row["n"] else 0
+
+        total = await _n("SELECT COUNT(*) AS n FROM verify_events WHERE action = 'verified'")
+        today = await _n(
+            "SELECT COUNT(*) AS n FROM verify_events WHERE action = 'verified' AND created_at::date = CURRENT_DATE"
+        )
+        last_7d = await _n(
+            "SELECT COUNT(*) AS n FROM verify_events WHERE action = 'verified' AND created_at > now() - interval '7 days'"
+        )
+        last_30d = await _n(
+            "SELECT COUNT(*) AS n FROM verify_events WHERE action = 'verified' AND created_at > now() - interval '30 days'"
+        )
+        locked = await _n("SELECT COUNT(*) AS n FROM verify_events WHERE action = 'lock'")
+        per_guild = await self._fetch(
+            "SELECT ve.guild_id, s.name AS guild_name, "
+            "COUNT(*) FILTER (WHERE ve.action = 'verified') AS verified, "
+            "COUNT(*) FILTER (WHERE ve.action = 'lock') AS locked "
+            "FROM verify_events ve "
+            "LEFT JOIN servers s ON s.guild_id = ve.guild_id "
+            "GROUP BY ve.guild_id, s.name ORDER BY verified DESC, ve.guild_id"
+        )
+        recent = await self._fetch(
+            "SELECT ve.id, ve.guild_id, s.name AS guild_name, ve.user_id, ve.action, ve.created_at "
+            "FROM verify_events ve "
+            "LEFT JOIN servers s ON s.guild_id = ve.guild_id "
+            "ORDER BY ve.created_at DESC LIMIT $1",
+            recent_limit,
+        )
+        return {
+            "total": total,
+            "today": today,
+            "last_7d": last_7d,
+            "last_30d": last_30d,
+            "locked": locked,
+            "per_guild": per_guild,
+            "recent": recent,
+        }
+
+    # -- invites ---------------------------------------------------------
+
+    async def invite_leaderboard(
+        self, guild_id: Optional[int] = None, days: int = 30, limit: int = 20
+    ) -> List[dict]:
+        cond = "created_at > now() - make_interval(days => $1)"
+        args: List[Any] = [days, limit]
+        if guild_id:
+            cond += " AND guild_id = $2"
+            args = [days, guild_id, limit]
+        return await self._fetch(
+            f"SELECT inviter_id, COUNT(*) AS invites FROM invite_track WHERE {cond} "
+            "GROUP BY inviter_id ORDER BY invites DESC LIMIT $%d" % len(args),
+            *args,
+        )
+
+    async def invite_stats(self, guild_id: int, days: int = 30) -> dict:
+        total = await self._fetchval(
+            "SELECT COUNT(*) FROM invite_track WHERE guild_id = $1", guild_id
+        )
+        recent = await self._fetchval(
+            "SELECT COUNT(*) FROM invite_track WHERE guild_id = $1 "
+            "AND created_at > now() - make_interval(days => $2)",
+            guild_id, days,
+        )
+        series = await self._fetch(
+            "SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS date, "
+            "COUNT(*) AS n FROM invite_track "
+            "WHERE guild_id = $1 AND created_at > now() - interval '14 days' "
+            "GROUP BY 1 ORDER BY 1",
+            guild_id,
+        )
+        return {
+            "total": int(total or 0),
+            "recent": int(recent or 0),
+            "series": series,
+        }
+
+    async def invite_global_stats(self) -> dict:
+        total = await self._fetchval("SELECT COUNT(*) FROM invite_track")
+        recent30 = await self._fetchval(
+            "SELECT COUNT(*) FROM invite_track "
+            "WHERE created_at > now() - interval '30 days'"
+        )
+        leaderboard = await self.invite_leaderboard(days=30)
+        return {
+            "total": int(total or 0),
+            "recent30": int(recent30 or 0),
+            "leaderboard": leaderboard,
+        }
+
+    # -- scheduled messages ----------------------------------------------
+
+    async def list_scheduled_messages(self, guild_id: int) -> List[dict]:
+        return await self._fetch(
+            "SELECT * FROM scheduled_messages WHERE guild_id = $1 ORDER BY created_at DESC",
+            guild_id,
+        )
+
+    async def create_scheduled_message(
+        self,
+        guild_id: int,
+        channel_id: int,
+        content: str,
+        interval_minutes: Optional[int] = None,
+        daily_hhmm: Optional[str] = None,
+        run_at: Optional[Any] = None,
+        created_by: Optional[int] = None,
+    ) -> Optional[dict]:
+        return await self._fetchrow(
+            "INSERT INTO scheduled_messages "
+            "(guild_id, channel_id, content, interval_minutes, daily_hhmm, run_at, created_by) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            guild_id, channel_id, content, interval_minutes, daily_hhmm, run_at, created_by,
+        )
+
+    async def delete_scheduled_message(self, message_id: int, guild_id: int) -> bool:
+        row = await self._execute(
+            "DELETE FROM scheduled_messages WHERE id = $1 AND guild_id = $2",
+            message_id, guild_id,
+        )
+        return row == "DELETE 1"
+
+    # -- phishing --------------------------------------------------------
+
+    async def get_phishing_domains(self, guild_id: int, kind: str = "block") -> List[str]:
+        rows = await self._fetch(
+            "SELECT domain FROM phishing_domains WHERE kind = $1 AND guild_id IN (0, $2)",
+            kind, guild_id,
+        )
+        return [r["domain"] for r in rows]
+
+    async def add_phishing_domain(
+        self, guild_id: int, domain: str, kind: str = "block"
+    ) -> bool:
+        domain = domain.strip().lower().rstrip(".")
+        if not domain:
+            return False
+        try:
+            await self._execute(
+                "INSERT INTO phishing_domains (guild_id, domain, kind) VALUES ($1, $2, $3) "
+                "ON CONFLICT (guild_id, domain, kind) DO NOTHING",
+                guild_id, domain, kind,
+            )
+            return True
+        except Exception:
+            return False
+
+    async def remove_phishing_domain(
+        self, guild_id: int, domain: str, kind: str = "block"
+    ) -> bool:
+        row = await self._execute(
+            "DELETE FROM phishing_domains WHERE guild_id = $1 AND domain = $2 AND kind = $3",
+            guild_id, domain.strip().lower(), kind,
+        )
+        return row == "DELETE 1"
+
+    async def create_discord_ticket(self, guild_id: int, channel_id: int, creator_id: int) -> int:
+        row = await self._fetchrow(
+            "INSERT INTO discord_tickets (guild_id, channel_id, creator_id) "
+            "VALUES ($1, $2, $3) RETURNING id",
+            guild_id, channel_id, creator_id,
+        )
+        return int(row["id"])
+
+    async def get_discord_ticket_by_channel(self, channel_id: int) -> Optional[dict]:
+        return await self._fetchrow(
+            "SELECT * FROM discord_tickets WHERE channel_id = $1 AND status <> 'closed'",
+            channel_id,
+        )
+
+    async def get_discord_ticket(self, ticket_id: int) -> Optional[dict]:
+        return await self._fetchrow("SELECT * FROM discord_tickets WHERE id = $1", ticket_id)
+
+    async def open_discord_tickets(self, guild_id: int, creator_id: int) -> int:
+        return int(
+            await self._fetchval(
+                "SELECT COUNT(*) FROM discord_tickets "
+                "WHERE guild_id = $1 AND creator_id = $2 AND status = 'open'",
+                guild_id, creator_id,
+            )
+        )
+
+    async def claim_discord_ticket(self, ticket_id: int, claimed_by: int) -> None:
+        await self._execute(
+            "UPDATE discord_tickets SET status = 'claimed', claimed_by = $2 WHERE id = $1",
+            ticket_id, claimed_by,
+        )
+
+    async def close_discord_ticket(self, ticket_id: int, closed_by: int, transcript_id: int) -> None:
+        await self._execute(
+            "UPDATE discord_tickets SET status = 'closed', closed_by = $2, "
+            "transcript_id = $3, closed_at = now() WHERE id = $1",
+            ticket_id, closed_by, transcript_id,
+        )
+
+    async def add_transcript(self, guild_id: int, ticket_id: int, channel_id: int, html: str) -> int:
+        row = await self._fetchrow(
+            "INSERT INTO ticket_transcripts (guild_id, ticket_id, channel_id, html) "
+            "VALUES ($1, $2, $3, $4) RETURNING id",
+            guild_id, ticket_id, channel_id, html,
+        )
+        return int(row["id"])
+
+    async def get_transcript(self, transcript_id: int) -> Optional[dict]:
+        return await self._fetchrow("SELECT * FROM ticket_transcripts WHERE id = $1", transcript_id)
+
+    async def list_discord_tickets(self, guild_id: int) -> List[dict]:
+        return await self._fetch(
+            "SELECT * FROM discord_tickets WHERE guild_id = $1 ORDER BY created_at DESC",
+            guild_id,
         )

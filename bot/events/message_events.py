@@ -9,6 +9,7 @@ import logging
 import discord
 from discord.ext import commands
 
+from ..phishing_checker import check as check_phishing
 from ..version import __version__
 
 log = logging.getLogger("wordlock.bot.events")
@@ -46,19 +47,43 @@ class MessageEvents(commands.Cog):
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
+        inviter_id = await self._resolve_inviter(guild)
         await self.bot.db.upsert_server(
             guild_id=guild.id,
             name=guild.name,
             owner_id=guild.owner_id,
             member_count=guild.member_count,
             bot_version=self.bot.version,
+            inviter_id=inviter_id,
         )
+        await self.bot.db.record_guild_join(guild.id, guild.name)
         await self.bot.db.bump_stat("servers_joined", 1)
         await self._check_bot_permissions(guild)
         log.info("Joined guild %s (%s)", guild.name, guild.id)
 
+    async def _resolve_inviter(self, guild: discord.Guild) -> Optional[int]:
+        """Find the user who invited the bot via the guild audit log.
+
+        Discord records a `bot_add` audit entry pointing at the bot user; the
+        entry author is the inviter. Returns None if it cannot be determined
+        (e.g. audit log access missing)."""
+        try:
+            if not self.bot.user:
+                return None
+            async for entry in guild.audit_logs(
+                limit=5, action=discord.AuditLogAction.bot_add
+            ):
+                if entry.target and entry.target.id == self.bot.user.id:
+                    if entry.user:
+                        return entry.user.id
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            log.debug("Could not read audit log for guild %s", guild.id)
+        return None
+
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
+        await self.bot.db.record_guild_leave(guild.id)
         await self.bot.db.delete_server(guild.id)
         await self.bot.filters.invalidate(guild.id)
         log.info("Left guild %s (%s)", guild.name, guild.id)
@@ -164,6 +189,9 @@ class MessageEvents(commands.Cog):
             return
 
         if await self._is_bypassed(message, server):
+            return
+
+        if await self._check_phishing(message, server):
             return
 
         try:
@@ -338,6 +366,143 @@ class MessageEvents(commands.Cog):
             await author.send(embed=embed)
         except (discord.HTTPException, discord.Forbidden):
             pass
+
+    async def _check_phishing(
+        self, message: discord.Message, server: dict
+    ) -> bool:
+        if not server.get("phishing_enabled") or not message.content:
+            return False
+
+        try:
+            block = set(
+                await self.bot.db.get_phishing_domains(message.guild.id, "block")
+            )
+            allow = set(
+                await self.bot.db.get_phishing_domains(message.guild.id, "allow")
+            )
+            result = check_phishing(message.content, block, allow)
+        except Exception:
+            log.exception("Phishing check failed (guild %s)", message.guild.id)
+            return False
+
+        if result is None:
+            return False
+
+        action = server.get("phishing_action") or "delete"
+        executed: list[str] = []
+        member = message.guild.get_member(message.author.id)
+
+        if action == "delete" and message.guild.me.guild_permissions.manage_messages:
+            try:
+                await message.delete()
+                executed.append("delete")
+            except discord.HTTPException:
+                log.debug("Could not delete phishing message %s", message.id)
+        elif action == "warn":
+            try:
+                await self.bot.db.add_warning(
+                    message.guild.id,
+                    message.author.id,
+                    reason=f"Phishing: {result.domain}",
+                    moderator=self.bot.user.id if self.bot.user else None,
+                )
+                executed.append("warn")
+            except Exception:
+                log.exception("Could not add phishing warning (guild %s)", message.guild.id)
+            await self._dm_phishing_warning(message.author, result.domain)
+        elif action == "timeout" and member is not None:
+            timeout_ok = (
+                message.guild.me.guild_permissions.moderate_members
+                and message.guild.me.top_role > member.top_role
+            )
+            if timeout_ok:
+                try:
+                    minutes = server.get("timeout_minutes") or 60
+                    await member.timeout(
+                        discord.utils.utcnow() + datetime.timedelta(minutes=minutes),
+                        reason=f"WordLock: Phishing ({result.domain})",
+                    )
+                    executed.append("timeout")
+                except discord.HTTPException:
+                    log.debug("Could not timeout %s due to phishing", member.id)
+        elif action == "log":
+            executed.append("log")
+
+        try:
+            await self.bot.db.log_violation(
+                guild_id=message.guild.id,
+                user_id=message.author.id,
+                message_text=message.content[:1500],
+                matched_word=result.domain,
+                category="phishing",
+                severity=5,
+                action=",".join(executed) or "log",
+            )
+        except Exception:
+            log.exception("Could not log phishing violation (guild %s)", message.guild.id)
+
+        if server.get("log_channel_id"):
+            await self._send_phishing_log(message, result, executed)
+
+        log.info(
+            "Guild %s: phishing blocked domain=%s reason=%r action=%s",
+            message.guild.id,
+            result.domain,
+            result.reason,
+            action,
+        )
+        return True
+
+    async def _dm_phishing_warning(
+        self, author: discord.User, domain: str
+    ) -> None:
+        try:
+            embed = discord.Embed(
+                title="WordLock",
+                description=(
+                    f"Deine Nachricht wurde von WordLock blockiert, weil sie einen "
+                    f"verdächtigen Link enthielt.\nDetektierte Domain: `{domain}`"
+                ),
+                color=0xED4245,
+            )
+            await author.send(embed=embed)
+        except (discord.HTTPException, discord.Forbidden):
+            pass
+
+    async def _send_phishing_log(
+        self, message: discord.Message, result, executed: list[str]
+    ) -> None:
+        server = await self.bot.db.get_server(message.guild.id)
+        if not server:
+            return
+        channel = message.guild.get_channel(server.get("log_channel_id"))
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(
+            title="Phishing-Link blockiert",
+            description=(
+                f"**Domain:** `{result.domain}`\n"
+                f"**Grund:** {result.reason}\n"
+                f"**Aktion:** {', '.join(executed) or '—'}"
+            ),
+            color=0x992D22,
+        )
+        embed.set_author(
+            name=str(message.author), icon_url=message.author.display_avatar.url
+        )
+        embed.add_field(
+            name="Nachricht",
+            value=(message.content[:1000] or "*kein Text*"),
+            inline=False,
+        )
+        embed.set_footer(
+            text=f"WordLock v{__version__} • Benutzer-ID: {message.author.id}"
+        )
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            log.debug("Could not send phishing log embed in %s", channel.id)
 
     async def _send_log_embed(
         self, message: discord.Message, entry, executed: list[str]

@@ -41,17 +41,41 @@ class WordLockBot(commands.Bot):
             int(i) for i in os.environ.get("BOT_OWNER_IDS", "").split(",") if i.strip()
         }
         self.start_time: float | None = None
+        self.ticket_views: dict = {}
+        self.ticket_action_views: dict = {}
+        self.verify_views: dict = {}
 
     async def setup_hook(self) -> None:
         await self.db.connect()
         from .commands.filter_commands import FilterCommands
         from .commands.settings_commands import SettingsCommands
+        from .commands.ticket_commands import TicketCommands, register_ticket_views
+        from .commands.verify_commands import VerifyCommands, register_verify_views
         from .events.message_events import MessageEvents
         from .events.protection import ProtectionEvents
         from .events.security import DISABLED_MSG, SecurityEvents
 
         await self.add_cog(FilterCommands(self))
         await self.add_cog(SettingsCommands(self))
+        await self.add_cog(TicketCommands(self))
+        await register_ticket_views(self)
+        await self.add_cog(VerifyCommands(self))
+        await register_verify_views(self)
+
+        from .commands.phishing_commands import PhishingCommands
+        from .commands.scheduled_messages import ScheduledMessages
+        from .events.welcome_events import WelcomeEvents
+        from .events.invite_tracker import InviteTracker
+
+        await self.add_cog(WelcomeEvents(self))
+        await self.add_cog(InviteTracker(self))
+        await self.add_cog(PhishingCommands(self))
+        await self.add_cog(ScheduledMessages(self))
+
+        from .commands.webhooksay_commands import WebhookSayCommands
+
+        await self.add_cog(WebhookSayCommands(self))
+
         message_events = MessageEvents(self)
         await self.add_cog(message_events)
         await self.add_cog(SecurityEvents(self))
@@ -256,15 +280,38 @@ class WordLockBot(commands.Bot):
         )
         for guild in self.guilds:
             try:
+                server = await self.db.get_server(guild.id)
+                inviter_id = None
+                if server and server.get("inviter_id"):
+                    inviter_id = server["inviter_id"]
+                else:
+                    inviter_id = await self._resolve_inviter(guild)
                 await self.db.upsert_server(
                     guild_id=guild.id,
                     name=guild.name,
                     owner_id=guild.owner_id,
                     member_count=guild.member_count,
                     bot_version=self.version,
+                    inviter_id=inviter_id,
                 )
             except Exception:
                 log.exception("Could not upsert guild %s", guild.id)
+
+    async def _resolve_inviter(self, guild: discord.Guild) -> Optional[int]:
+        """Find the user who invited the bot via the guild audit log."""
+        try:
+            if not self.user:
+                return None
+            async for entry in guild.audit_logs(
+                limit=5, action=discord.AuditLogAction.bot_add
+            ):
+                if entry.target and entry.target.id == self.user.id:
+                    if entry.user:
+                        return entry.user.id
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            log.debug("Could not read audit log for guild %s", guild.id)
+        return None
 
 
 def main() -> None:

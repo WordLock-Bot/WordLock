@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -32,15 +34,30 @@ def get_db(request: Request) -> Database:
 
 
 async def require_guild_admin(guild_id: int, request: Request):
-    """Current user must be able to manage the given guild (or be bot owner)."""
+    """Current user must have invited the bot to the guild (or be whitelisted
+    or be an explicitly invited co-moderator).
+
+    Only the user who invited WordLock to a guild (plus invited panel members
+    and staff) may see/configure it in the dashboard.
+    """
     user = await auth.current_user(request)
     db = get_db(request)
     if user["discord_id"] in auth._whitelist():
         return user
-    guilds = await auth.fetch_user_guilds(user.get("access_token") or "")
-    for g in guilds:
-        if int(g["id"]) == guild_id and (g.get("permissions") or 0) & auth.MANAGE_GUILD:
-            return user
+    server = await db.get_server(guild_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    if server.get("inviter_id") == user["discord_id"]:
+        return user
+    # Invited co-moderator / viewer -> panel access for this guild.
+    if await db.has_guild_invite(guild_id, user["discord_id"]):
+        return user
+    # Legacy servers without an inviter: fall back to the Discord admin check.
+    if not server.get("inviter_id"):
+        guilds = await auth.fetch_user_guilds(user.get("access_token") or "")
+        for g in guilds:
+            if int(g["id"]) == guild_id and (g.get("permissions") or 0) & auth.MANAGE_GUILD:
+                return user
     raise HTTPException(status_code=403, detail="You are not an admin of this guild")
 
 
@@ -103,6 +120,29 @@ async def auth_me(request: Request):
     known_rows = await db.all_servers()
     known = {int(r["guild_id"]): r for r in known_rows}
     admin_guilds = auth.admin_guilds_for(user, guilds, known)
+
+    # Servers the user was explicitly invited to moderate via panel invites.
+    invited_rows = await db.guild_invites_for_user(user["discord_id"])
+    invited_ids = {int(r["guild_id"]): r["role"] for r in invited_rows}
+    seen = {int(g["id"]) for g in admin_guilds}
+    for gid in invited_ids:
+        if gid in seen:
+            continue
+        known_g = known.get(gid)
+        if known_g is None or known_g.get("status") == "removed":
+            continue
+        admin_guilds.append(
+            {
+                "id": str(gid),
+                "name": known_g.get("name") or "unknown",
+                "icon": known_g.get("icon"),
+                "member_count": known_g.get("member_count", 0),
+                "bot_in_server": True,
+                "bot_status": known_g.get("status", "active"),
+                "bot_has_admin": bool(known_g.get("admin_ok", True)),
+            }
+        )
+
     return {
         "id": str(user["discord_id"]),
         "username": user.get("username"),
@@ -212,9 +252,171 @@ async def guild_channels(guild_id: int, request: Request):
     channels = [
         {"id": str(c["id"]), "name": c.get("name"), "type": c.get("type")}
         for c in resp.json()
-        if c.get("type") in (0, 5)
+        if c.get("type") in (0, 4, 5)
     ]
     return {"channels": channels}
+
+
+@router.get("/guilds/{guild_id}/ticket-config")
+async def get_ticket_config(guild_id: int, request: Request):
+    await require_guild_admin(guild_id, request)
+    db = get_db(request)
+    row = await db.get_ticket_config(guild_id)
+    if row is None:
+        return {
+            "guild_id": str(guild_id),
+            "enabled": False,
+            "panel_channel_id": None,
+            "panel_message_id": None,
+            "category_id": None,
+            "welcome_message": "Hallo {mention}! Willkommen in deinem Ticket. Das Team kümmert sich gleich um dich.",
+            "ticket_name_format": "ticket-{user}",
+            "support_role_ids": [],
+            "max_open": 1,
+            "panel_needs_deploy": False,
+        }
+    return {
+        "guild_id": str(row["guild_id"]),
+        "enabled": bool(row.get("enabled")),
+        "panel_channel_id": str(row["panel_channel_id"]) if row.get("panel_channel_id") else None,
+        "panel_message_id": str(row["panel_message_id"]) if row.get("panel_message_id") else None,
+        "category_id": str(row["category_id"]) if row.get("category_id") else None,
+        "welcome_message": row.get("welcome_message") or "",
+        "ticket_name_format": row.get("ticket_name_format") or "ticket-{user}",
+        "support_role_ids": [str(r) for r in (row.get("support_role_ids") or [])],
+        "max_open": row.get("max_open") or 1,
+        "panel_needs_deploy": bool(row.get("panel_needs_deploy")),
+    }
+
+
+@router.put("/guilds/{guild_id}/ticket-config")
+async def put_ticket_config(guild_id: int, request: Request):
+    await require_guild_admin(guild_id, request)
+    db = get_db(request)
+    body = await request.json()
+    fields: dict = {}
+    if "category_id" in body:
+        val = body["category_id"]
+        fields["category_id"] = int(val) if val else None
+    if "panel_channel_id" in body:
+        val = body["panel_channel_id"]
+        fields["panel_channel_id"] = int(val) if val else None
+    if "welcome_message" in body:
+        msg = str(body["welcome_message"])[:2000]
+        fields["welcome_message"] = msg
+    if "ticket_name_format" in body:
+        fmt = str(body["ticket_name_format"])[:200]
+        fields["ticket_name_format"] = fmt
+    if "support_role_ids" in body:
+        ids = body["support_role_ids"]
+        fields["support_role_ids"] = [int(r) for r in ids] if ids else []
+    if "max_open" in body:
+        val = int(body["max_open"])
+        fields["max_open"] = max(1, min(10, val))
+    if "enabled" in body:
+        fields["enabled"] = bool(body["enabled"])
+    if fields:
+        fields["panel_needs_deploy"] = True
+        await db.set_ticket_config(guild_id, **fields)
+    return {"ok": True}
+
+
+@router.get("/guilds/{guild_id}/roles")
+async def guild_roles(guild_id: int, request: Request):
+    await require_guild_admin(guild_id, request)
+    token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        raise HTTPException(status_code=500, detail="DISCORD_TOKEN not configured")
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{auth.DISCORD_API}/guilds/{guild_id}/roles",
+            headers={"Authorization": f"Bot {token}"},
+            timeout=15,
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="Could not load roles")
+    roles = [
+        {
+            "id": str(r["id"]),
+            "name": r.get("name", ""),
+            "color": r.get("color", 0),
+            "managed": r.get("managed", False),
+            "position": r.get("position", 0),
+        }
+        for r in resp.json()
+        if not r.get("managed", False) and r.get("name", "@everyone") != "@everyone"
+    ]
+    roles.sort(key=lambda r: r["position"], reverse=True)
+    return {"roles": roles}
+
+
+async def require_guild_owner(guild_id: int, request: Request):
+    """Only the user who actually invited the bot (or staff) may manage
+    panel invites. Co-moderators invited to the panel cannot invite others."""
+    user = await auth.current_user(request)
+    db = get_db(request)
+    if user["discord_id"] in auth._whitelist():
+        return user
+    server = await db.get_server(guild_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    if server.get("inviter_id") == user["discord_id"]:
+        return user
+    raise HTTPException(status_code=403, detail="Only the server owner can manage panel members")
+
+
+@router.get("/guilds/{guild_id}/panel-members")
+async def guild_panel_members(guild_id: int, request: Request):
+    """List all users invited to moderate this guild's panel."""
+    await require_guild_admin(guild_id, request)
+    rows = await get_db(request).list_guild_invites(guild_id)
+    members = []
+    for r in rows:
+        members.append(
+            {
+                "discord_id": str(r["discord_id"]),
+                "username": r.get("username"),
+                "role": r["role"],
+                "invited_by": str(r["invited_by"]),
+                "created_at": r["created_at"].isoformat() if isinstance(r["created_at"], datetime) else r["created_at"],
+                "pending": not bool(r.get("known")),
+            }
+        )
+    inviter = await get_db(request).get_server(guild_id)
+    return {
+        "members": members,
+        "inviter_id": str(inviter["inviter_id"]) if inviter and inviter.get("inviter_id") else None,
+    }
+
+
+@router.post("/guilds/{guild_id}/panel-members")
+async def guild_panel_member_add(guild_id: int, payload: dict, request: Request):
+    """Invite a Discord user (by ID) to moderate this guild's panel."""
+    await require_guild_owner(guild_id, request)
+    db = get_db(request)
+    discord_id = payload.get("discord_id")
+    role = str(payload.get("role") or "moderator").strip()
+    if discord_id is None:
+        raise HTTPException(status_code=400, detail="discord_id fehlt")
+    try:
+        discord_id = int(discord_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="discord_id muss eine Zahl sein")
+    if role not in ("moderator", "viewer"):
+        raise HTTPException(status_code=400, detail="role muss 'moderator' oder 'viewer' sein")
+    user = await auth.current_user(request)
+    row = await db.add_guild_invite(guild_id, discord_id, user["discord_id"], role)
+    await db.add_log("panel_invite", f"Panel-Mitglied {discord_id} eingeladen (role={role})", "info", guild_id=guild_id)
+    return {"ok": True, "member": {"discord_id": str(discord_id), "role": row["role"]}}
+
+
+@router.delete("/guilds/{guild_id}/panel-members/{discord_id}")
+async def guild_panel_member_remove(guild_id: int, discord_id: int, request: Request):
+    """Remove a user's panel access for this guild."""
+    await require_guild_owner(guild_id, request)
+    if not await get_db(request).remove_guild_invite(guild_id, discord_id):
+        raise HTTPException(status_code=404, detail="Mitglied nicht gefunden")
+    return {"ok": True}
 
 
 @router.get("/team")
@@ -234,6 +436,9 @@ async def update_guild_config(guild_id: int, payload: dict, request: Request):
         "std_word_action",
         "anti_spam_enabled", "anti_nuke_enabled",
         "anti_spam_config", "anti_nuke_config",
+        "welcome_channel_id", "welcome_message",
+        "leave_channel_id", "leave_message",
+        "phishing_enabled", "phishing_action", "phishing_config",
     }
     fields = {k: v for k, v in payload.items() if k in allowed}
     if not fields:
@@ -274,6 +479,35 @@ async def update_guild_config(guild_id: int, payload: dict, request: Request):
     for flag in ("anti_spam_enabled", "anti_nuke_enabled"):
         if flag in fields:
             fields[flag] = bool(fields[flag])
+
+    for key in ("welcome_channel_id", "leave_channel_id"):
+        if key in fields and fields[key]:
+            fields[key] = int(fields[key])
+        elif key in fields:
+            fields[key] = None
+    if "phishing_enabled" in fields:
+        fields["phishing_enabled"] = bool(fields["phishing_enabled"])
+    if "phishing_action" in fields:
+        if fields["phishing_action"] not in ("delete", "warn", "timeout", "log"):
+            raise HTTPException(status_code=400, detail="Ungültige Aktion")
+    if "phishing_config" in fields:
+        cfg = fields["phishing_config"]
+        if not isinstance(cfg, dict):
+            raise HTTPException(status_code=400, detail="phishing_config muss ein Objekt sein")
+        sanitized = {}
+        suspicious = cfg.get("suspicious_tlds")
+        shorteners = cfg.get("shorteners")
+        if suspicious is None:
+            suspicious = []
+        if shorteners is None:
+            shorteners = []
+        if not isinstance(suspicious, list) or not all(isinstance(x, str) for x in suspicious):
+            raise HTTPException(status_code=400, detail="Ungültige suspicious_tlds")
+        if not isinstance(shorteners, list) or not all(isinstance(x, str) for x in shorteners):
+            raise HTTPException(status_code=400, detail="Ungültige shorteners")
+        sanitized["suspicious_tlds"] = suspicious
+        sanitized["shorteners"] = shorteners
+        fields["phishing_config"] = sanitized
 
     await db.update_server(guild_id, **fields)
     return await db.get_server(guild_id)
@@ -445,3 +679,81 @@ async def guild_stats(guild_id: int, request: Request, days: int = Query(30, le=
             )) or 0
         ),
     }
+
+
+@router.get("/guilds/{guild_id}/invites")
+async def guild_invites(guild_id: int, request: Request):
+    await require_guild_admin(guild_id, request)
+    db = get_db(request)
+    return {
+        "stats": await db.invite_stats(guild_id),
+        "leaderboard": await db.invite_leaderboard(guild_id, 30),
+    }
+
+
+@router.get("/guilds/{guild_id}/scheduled")
+async def list_scheduled(guild_id: int, request: Request):
+    await require_guild_admin(guild_id, request)
+    db = get_db(request)
+    return {"messages": await db.list_scheduled_messages(guild_id)}
+
+
+@router.post("/guilds/{guild_id}/scheduled")
+async def create_scheduled(guild_id: int, payload: dict, request: Request):
+    await require_guild_admin(guild_id, request)
+    db = get_db(request)
+    if not await db.get_server(guild_id):
+        raise HTTPException(status_code=404, detail="WordLock ist auf diesem Server nicht aktiv")
+
+    channel_id = payload.get("channel_id")
+    if not isinstance(channel_id, int):
+        raise HTTPException(status_code=400, detail="channel_id ist erforderlich")
+
+    content = (payload.get("content") or "").strip()
+    if not content or len(content) > 2000:
+        raise HTTPException(status_code=400, detail="content muss 1-2000 Zeichen lang sein")
+
+    interval_minutes = payload.get("interval_minutes")
+    daily_hhmm = payload.get("daily_hhmm")
+    if (interval_minutes is not None) and (daily_hhmm is not None):
+        raise HTTPException(status_code=400, detail="Nur einer von interval_minutes oder daily_hhmm")
+
+    run_at = None
+    if interval_minutes is not None:
+        if not isinstance(interval_minutes, int) or not 1 <= interval_minutes <= 10080:
+            raise HTTPException(status_code=400, detail="interval_minutes muss 1-10080 sein")
+        run_at = datetime.now(timezone.utc) + timedelta(minutes=interval_minutes)
+    elif daily_hhmm is not None:
+        if not isinstance(daily_hhmm, str):
+            raise HTTPException(status_code=400, detail="Ungültiges daily_hhmm")
+        match = re.fullmatch(r"^(\d{1,2}):(\d{2})$", daily_hhmm)
+        if not match:
+            raise HTTPException(status_code=400, detail="daily_hhmm muss HH:MM sein")
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise HTTPException(status_code=400, detail="Ungültige Uhrzeit")
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Einer von interval_minutes oder daily_hhmm ist erforderlich",
+        )
+
+    created = await db.create_scheduled_message(
+        guild_id=guild_id,
+        channel_id=channel_id,
+        content=content,
+        interval_minutes=interval_minutes,
+        daily_hhmm=daily_hhmm,
+        run_at=run_at,
+    )
+    return {"ok": True, "id": (created or {}).get("id")}
+
+
+@router.delete("/guilds/{guild_id}/scheduled/{message_id}")
+async def delete_scheduled(guild_id: int, message_id: int, request: Request):
+    await require_guild_admin(guild_id, request)
+    db = get_db(request)
+    ok = await db.delete_scheduled_message(message_id, guild_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Geplante Nachricht nicht gefunden")
+    return {"ok": True}

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { ShieldAlert, Power } from "lucide-react";
+import { ShieldAlert, Power, Link2, Save } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import type { Incident, ServerConfig } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
@@ -14,6 +14,7 @@ export default function GuildSecurity() {
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [toast, setToast] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   const load = async () => {
     try {
@@ -38,6 +39,25 @@ export default function GuildSecurity() {
       );
       setToast(t("security.enabledToast"));
       await load();
+    } catch (e) {
+      setToast(e instanceof ApiError ? e.message : t("common.unknownError"));
+    }
+  };
+
+  const savePhishing = async () => {
+    if (!config) return;
+    setSaved(false);
+    try {
+      await api(`/api/guilds/${guildId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          phishing_enabled: config.phishing_enabled,
+          phishing_action: config.phishing_action,
+        }),
+      });
+      setToast(t("common.saved"));
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
     } catch (e) {
       setToast(e instanceof ApiError ? e.message : t("common.unknownError"));
     }
@@ -125,6 +145,63 @@ export default function GuildSecurity() {
           ))
         )}
       </div>
+
+      {config && (
+        <div className="card">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
+                <Link2 className="h-5 w-5 text-blurple" /> {t("security.phishingTitle")}
+              </h2>
+              <p className="mt-1 text-sm text-gray-400">{t("security.phishingDesc")}</p>
+            </div>
+            <button
+              onClick={() =>
+                setConfig({ ...config, phishing_enabled: !config.phishing_enabled })
+              }
+              className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold ${
+                config.phishing_enabled
+                  ? "bg-wordlock-green/20 text-wordlock-green"
+                  : "bg-white/10 text-gray-300"
+              }`}
+            >
+              <ShieldAlert className="h-4 w-4" />
+              {config.phishing_enabled ? t("common.disable") : t("common.enable")}
+            </button>
+          </div>
+          {config.phishing_enabled ? (
+            <div className="space-y-4">
+              <div>
+                <label className="label">{t("security.phishAction")}</label>
+                <select
+                  className="input"
+                  value={config.phishing_action}
+                  onChange={(e) =>
+                    setConfig({
+                      ...config,
+                      phishing_action: e.target.value as typeof config.phishing_action,
+                    })
+                  }
+                >
+                  <option value="delete">{t("security.phishAction.delete")}</option>
+                  <option value="warn">{t("security.phishAction.warn")}</option>
+                  <option value="timeout">{t("security.phishAction.timeout")}</option>
+                  <option value="log">{t("security.phishAction.log")}</option>
+                </select>
+              </div>
+              <p className="text-xs text-gray-500">{t("security.phishingNote")}</p>
+            </div>
+          ) : (
+            <p className="py-2 text-sm text-gray-500">{t("common.disabled")}</p>
+          )}
+          <div className="mt-4 flex justify-end">
+            <button onClick={savePhishing} className="btn-primary">
+              <Save className="h-4 w-4" />
+              {saved ? t("common.saved") : t("common.save")}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

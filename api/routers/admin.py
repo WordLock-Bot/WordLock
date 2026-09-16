@@ -63,6 +63,7 @@ async def overview(request: Request, _user=Depends(auth.require_admin)):
         "error_count": await db.error_count(),
         "version": __version__,
         "maintenance_mode": await db.maintenance_mode(),
+        "open_tickets": await db.open_ticket_count(),
         "started_at": getattr(request.app.state, "started_at", None),
         "last_updates": await db.list_updates(5),
         "status": {
@@ -81,6 +82,17 @@ async def overview(request: Request, _user=Depends(auth.require_admin)):
 @router.get("/servers")
 async def servers(request: Request, _user=Depends(auth.require_admin)):
     return await get_db(request).all_servers()
+
+
+@router.get("/history/servers")
+async def guild_history(request: Request, _user=Depends(auth.require_admin)):
+    db = get_db(request)
+    await db.backfill_guild_history()
+    return {
+        "total": await db.guild_history_total(),
+        "active": await db.guild_history_active(),
+        "entries": await db.list_guild_history(),
+    }
 
 
 @router.get("/servers/{guild_id}")
@@ -385,6 +397,23 @@ async def remove_bot(guild_id: int, request: Request, _user=Depends(auth.require
     return {"ok": True, "guild_id": guild_id}
 
 
+@router.post("/servers/{guild_id}/force-remove")
+async def force_remove(guild_id: int, request: Request, _user=Depends(auth.require_developer)):
+    """Delete a server and ALL its data - as if the bot was never invited.
+
+    Does not call Discord; it only wipes the database entries (server config,
+    custom words, overrides, violations, incidents, logs, invites).
+    """
+    db = get_db(request)
+    if not await db.get_server(guild_id):
+        raise HTTPException(status_code=404, detail="Server not found")
+    await db.force_remove_server(guild_id)
+    await db.add_log(
+        "admin", f"Server {guild_id} force-removed (all data deleted)", "info"
+    )
+    return {"ok": True, "guild_id": guild_id}
+
+
 # ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
@@ -406,6 +435,41 @@ async def stats(
         "servers": await db.server_count(),
         "active_users": await db.active_users(),
         "violations_total": await db.violations_total(),
+    }
+
+
+@router.get("/verify")
+async def verify_stats(request: Request, _user=Depends(auth.require_admin)):
+    db = get_db(request)
+    overview = await db.verify_overview()
+    total = await db._fetchval("SELECT COUNT(*) FROM verify_events")
+    return {**overview, "total": int(total or 0)}
+
+
+@router.get("/invites")
+async def invite_stats(request: Request, _user=Depends(auth.require_admin)):
+    db = get_db(request)
+    lb = await db.invite_leaderboard(days=30)
+    total = await db._fetchval("SELECT COUNT(*) FROM invite_track")
+    return {"leaderboard": lb, "total": int(total or 0)}
+
+
+@router.get("/security")
+async def security_overview(request: Request, _user=Depends(auth.require_admin)):
+    db = get_db(request)
+    staff = await db._fetch(
+        "SELECT discord_id, role FROM users WHERE role IN ('owner','developer','moderator') ORDER BY role, discord_id"
+    )
+    whitelist = [int(i) for i in os.environ.get("ADMIN_WHITELIST_IDS", "").split(",") if i.strip()]
+    role = auth._effective_role(_user)
+    return {
+        "staff": staff,
+        "whitelist_ids": whitelist if role != "moderator" else [],
+        "maintenance_mode": await db.maintenance_mode(),
+        "push_subscribers": int((await db._fetchval("SELECT COUNT(*) FROM push_subscriptions")) or 0),
+        "incidents": await db._fetch(
+            "SELECT id, guild_id, kind, severity, status, created_at FROM incidents ORDER BY created_at DESC LIMIT 15"
+        ),
     }
 
 
@@ -712,3 +776,106 @@ async def monitor_mute(payload: dict, request: Request, _user=Depends(auth.requi
     muted = bool(payload.get("muted"))
     await db.set_monitor_muted(muted)
     return {"ok": True, "muted": muted}
+
+
+# ---------------------------------------------------------------------------
+# Database maintenance (owner only)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/db/reset")
+async def reset_database(request: Request, _user=Depends(auth.require_owner)):
+    """Completely wipe the database (all data) and recreate the schema.
+
+    Destructive: deletes servers, words, violations, users, logs, incidents,
+    stats, push subscriptions - everything. The admin role is restored via the
+    ADMIN_WHITELIST_IDS env, so the owner stays logged in.
+    """
+    db = get_db(request)
+    await db.reset_database()
+    await db.add_log("admin", "Database reset (all data wiped)", "critical")
+    return {"ok": True}
+
+
+# -- Tickets ---------------------------------------------------------------
+
+
+@router.get("/tickets")
+async def admin_list_tickets(
+    request: Request,
+    status: Optional[str] = Query(None),
+    type: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    _user=Depends(auth.require_admin),
+):
+    db = get_db(request)
+    tickets = await db.list_tickets(status=status, ticket_type=type, search=search)
+    return {"tickets": tickets, "total": len(tickets)}
+
+
+@router.get("/tickets/{ticket_id}")
+async def admin_get_ticket(
+    request: Request,
+    ticket_id: int,
+    _user=Depends(auth.require_admin),
+):
+    db = get_db(request)
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+    messages = await db.list_ticket_messages(ticket_id)
+    return {"ticket": ticket, "messages": messages}
+
+
+@router.put("/tickets/{ticket_id}")
+async def admin_update_ticket(
+    request: Request,
+    ticket_id: int,
+    _user=Depends(auth.require_admin),
+):
+    db = get_db(request)
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+    body = await request.json()
+    fields = {}
+    for key in ("status", "assigned_to"):
+        if key in body:
+            fields[key] = body[key]
+    if fields:
+        await db.update_ticket(ticket_id, **fields)
+    return {"ok": True}
+
+
+@router.post("/tickets/{ticket_id}/reply")
+async def admin_reply_ticket(
+    request: Request,
+    ticket_id: int,
+    _user=Depends(auth.require_admin),
+):
+    db = get_db(request)
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+    body = await request.json()
+    reply = body.get("reply", "").strip()
+    if not reply:
+        raise HTTPException(400, "Reply is required")
+    username = _user.get("username", "admin")
+    await db.reply_ticket(ticket_id, reply, username)
+    await db.update_ticket(ticket_id, status="answered")
+    return {"ok": True}
+
+
+@router.delete("/tickets/{ticket_id}")
+async def admin_delete_ticket(
+    request: Request,
+    ticket_id: int,
+    _user=Depends(auth.require_owner),
+):
+    db = get_db(request)
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+    await db.delete_ticket(ticket_id)
+    return {"ok": True}

@@ -13,9 +13,15 @@ DISCORD_API = "https://discord.com/api"
 CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
 REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "http://localhost:8000/api/auth/callback")
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-change-me")
+_JWT_SECRET = os.environ.get("JWT_SECRET", "")
+if not _JWT_SECRET or _JWT_SECRET in ("dev-secret-change-me", "change_me_to_a_long_random_string"):
+    raise RuntimeError(
+        "JWT_SECRET is not set or is the insecure default. "
+        "Generate a strong secret with: openssl rand -hex 32"
+    )
+JWT_SECRET = _JWT_SECRET
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "720"))
-COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
 
 MANAGE_GUILD = 1 << 5  # Discord permission bit for "Manage Server"
 
@@ -194,13 +200,31 @@ async def require_owner(request: Request):
 
 
 def admin_guilds_for(user: dict, guilds: list[dict], known: dict[int, dict]) -> list[dict]:
-    """Filter guilds where the user can manage, enriched with bot status."""
+    """Filter guilds where the user can manage, enriched with bot status.
+
+    Only guilds that the current user invited the bot to are included (the
+    bot's inviter_id must match the user's Discord ID). This applies to every
+    user including owners/staff - all servers are visible in the admin panel
+    instead. Guilds without the bot are only included if the user could
+    invite it (manage permission present).
+
+    Legacy servers without a recorded inviter (inviter_id is NULL) stay
+    visible to every manager, so access is not lost after this feature lands.
+    """
     out = []
     for g in guilds:
         if (g.get("permissions") or 0) & MANAGE_GUILD:
             gid = int(g["id"])
             known_g = known.get(gid)
             bot_present = known_g is not None and known_g.get("status") != "removed"
+            inviter_id = known_g.get("inviter_id") if bot_present else None
+            if (
+                bot_present
+                and inviter_id is not None
+                and inviter_id != user["discord_id"]
+            ):
+                # Bot is here but someone else invited it - do not expose it.
+                continue
             out.append(
                 {
                     "id": str(gid),

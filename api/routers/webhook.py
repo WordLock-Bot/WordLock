@@ -8,7 +8,10 @@ external tools / CI / automations.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import os
+import socket
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -20,6 +23,42 @@ router = APIRouter(prefix="/api/webhook", tags=["webhook"])
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 ALLOWED_MIME = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+
+
+def _is_private_host(hostname: str) -> bool:
+    """Resolve a hostname and block private/reserved/link-local IP ranges (SSRF guard)."""
+    if not hostname:
+        return True
+    try:
+        addrs = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return True
+    for family, _, _, _, sockaddr in addrs:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return True
+    return False
+
+
+def _validate_image_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="image_url must be http(s)")
+    if parsed.hostname is None:
+        raise HTTPException(status_code=400, detail="image_url has no hostname")
+    if _is_private_host(parsed.hostname):
+        raise HTTPException(status_code=400, detail="image_url points to a private network")
+    return url
 
 
 def _check_secret(secret: str) -> None:
@@ -43,7 +82,8 @@ async def webhook_avatar(
 
     if not avatar and image_url:
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            image_url = _validate_image_url(image_url)
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
                 resp = await client.get(image_url)
                 resp.raise_for_status()
             content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()

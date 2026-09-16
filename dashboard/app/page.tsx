@@ -3,23 +3,23 @@
 import Link from "next/link";
 import {
   Shield,
-  MessageSquareWarning,
-  Gauge,
-  Users,
-  Lock,
-  Zap,
   GitBranch,
   Menu,
   X,
   Activity,
   LogIn,
   ChevronDown,
+  Server,
+  LayoutDashboard,
+  ArrowRight,
+  Ticket,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, loginUrl } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import { LangSwitcher } from "@/components/LangSwitcher";
 import { BackendStatus } from "@/components/BackendStatus";
+import { MODULE_GROUPS } from "@/lib/modules";
 import type { TeamMember, PublicStatus } from "@/lib/types";
 
 function buildTree(members: TeamMember[]): Map<number | null, TeamMember[]> {
@@ -77,19 +77,6 @@ export default function LandingPage() {
   const [navOpen, setNavOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  const FEATURES = [
-    {
-      icon: MessageSquareWarning,
-      title: t("landing.feature1.title"),
-      text: t("landing.feature1.text"),
-    },
-    { icon: Users, title: t("landing.feature2.title"), text: t("landing.feature2.text") },
-    { icon: Gauge, title: t("landing.feature3.title"), text: t("landing.feature3.text") },
-    { icon: Zap, title: t("landing.feature4.title"), text: t("landing.feature4.text") },
-    { icon: Lock, title: t("landing.feature5.title"), text: t("landing.feature5.text") },
-    { icon: Shield, title: t("landing.feature6.title"), text: t("landing.feature6.text") },
-  ];
-
   useEffect(() => {
     loginUrl().then(setUrl).catch(() => setUrl(""));
     api<TeamMember[]>("/api/team").then(setTeam).catch(() => {});
@@ -137,9 +124,9 @@ export default function LandingPage() {
 
   const menuItems = [
     {
-      href: "#features",
-      icon: Gauge,
-      label: t("landing.features"),
+      href: "#moduls",
+      icon: LayoutDashboard,
+      label: t("landing.modules"),
       onClick: () => setMenuOpen(false),
     },
     {
@@ -152,6 +139,12 @@ export default function LandingPage() {
       href: "/status",
       icon: Activity,
       label: t("landing.status"),
+      onClick: () => setMenuOpen(false),
+    },
+    {
+      href: "/tickets",
+      icon: Ticket,
+      label: t("webticket.navLabel"),
       onClick: () => setMenuOpen(false),
     },
   ];
@@ -291,19 +284,66 @@ export default function LandingPage() {
           )}
         </div>
 
+        {status?.stats && (
+          <div className="mt-6 flex items-center justify-center gap-2 text-sm text-gray-300">
+            <Server className="h-4 w-4 text-blurple" />
+            <span>{t("landing.serverCount", { n: String(status.stats.servers) })}</span>
+          </div>
+        )}
         <div className="mt-8 text-xs text-gray-500">{t("landing.securityNote")}</div>
       </section>
 
-      {/* Features */}
-      <section id="features" className="mx-auto max-w-6xl px-6 pb-24">
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {FEATURES.map((f) => (
-            <div key={f.title} className="card">
-              <f.icon className="h-8 w-8 text-blurple" />
-              <h3 className="mt-4 text-lg font-semibold text-white">{f.title}</h3>
-              <p className="mt-2 text-sm text-gray-400">{f.text}</p>
+      {/* Modules */}
+      <section id="moduls" className="mx-auto max-w-6xl px-6 pb-24">
+        <div className="mb-12 text-center">
+          <h2 className="text-3xl font-bold text-white">{t("landing.modulesTitle")}</h2>
+          <p className="mt-2 text-sm text-gray-400">{t("landing.modulesSubtitle")}</p>
+        </div>
+        <div className="space-y-12">
+          {MODULE_GROUPS.map((group) => (
+            <div key={group.id}>
+              <div className="mb-4 flex items-center gap-2">
+                <group.icon className="h-5 w-5 text-blurple" />
+                <h3 className="text-xl font-semibold text-white">{t(group.titleKey)}</h3>
+              </div>
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {group.modules.map((mod) => (
+                  <div key={mod.id} className="card relative">
+                    <mod.icon className="h-8 w-8 text-blurple" />
+                    <h4 className="mt-4 text-lg font-semibold text-white">{t(mod.titleKey)}</h4>
+                    <p className="mt-2 text-sm text-gray-400">{t(mod.descKey)}</p>
+                    {mod.isNew && (
+                      <span className="absolute right-3 top-3 rounded-full bg-wordlock-green/15 px-2 py-0.5 text-[10px] font-semibold text-wordlock-green">
+                        {t("landing.newBadge")}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
+        </div>
+
+        {/* Dashboard promo */}
+        <div className="mt-12">
+          <Link
+            href="/dashboard"
+            className="card flex flex-wrap items-center justify-between gap-4 transition hover:border-blurple/40"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blurple/10 text-blurple">
+                <LayoutDashboard className="h-6 w-6" />
+              </div>
+              <div>
+                <div className="font-semibold text-white">{t("landing.modulesTitle")}</div>
+                <div className="text-sm text-gray-400">{t("landing.dashboardCta")}</div>
+              </div>
+            </div>
+            <span className="flex items-center gap-1 text-sm font-semibold text-blurple">
+              {t("landing.dashboardCta")}
+              <ArrowRight className="h-4 w-4" />
+            </span>
+          </Link>
         </div>
       </section>
 
@@ -340,6 +380,9 @@ export default function LandingPage() {
           </Link>
           <Link href="/status" className="transition-colors hover:text-gray-300">
             {t("landing.status")}
+          </Link>
+          <Link href="#moduls" className="transition-colors hover:text-gray-300">
+            {t("landing.modules")}
           </Link>
         </nav>
       </footer>

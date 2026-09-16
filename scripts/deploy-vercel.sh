@@ -15,12 +15,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-V="vercel"
-command -v vercel >/dev/null 2>&1 || V="npx vercel"
+v() { # wrapper: "vercel" oder "npx vercel"
+    if command -v vercel >/dev/null 2>&1; then
+        vercel "$@"
+    else
+        npx --yes vercel "$@"
+    fi
+}
 
-if ! "$V" whoami >/dev/null 2>&1; then
+if ! v whoami >/dev/null 2>&1; then
     echo "[!] Bitte bei Vercel anmelden (Browser öffnet sich)..."
-    "$V" login
+    v login
 fi
 
 if [[ ! -f .tunnel-url ]]; then
@@ -37,15 +42,23 @@ if [[ -z "$URL" ]]; then
     read -r -p "NEXT_PUBLIC_API_URL (öffentliche API-URL, z.B. https://xxx.trycloudflare.com): " URL
 fi
 
-echo "[!] Verlinke/erzeuge Vercel-Projekt (Root: dashboard) ..."
-"$V" link --cwd dashboard --yes
+echo "[!] Verlinke Vercel-Projekt (nur falls nicht schon verlinkt) ..."
+if [[ ! -f dashboard/.vercel/project.json ]]; then
+    v link --cwd dashboard --yes
+else
+    PROJ="$(sed -n 's/.*"projectName":"\([^"]*\)".*/\1/p' dashboard/.vercel/project.json)"
+    echo "    (bestehende Verlinkung genutzt: $PROJ)"
+fi
 
 echo "[!] Setze NEXT_PUBLIC_API_URL=$URL (production) ..."
-"$V" env rm NEXT_PUBLIC_API_URL production 2>/dev/null || true
-echo "$URL" | "$V" env add NEXT_PUBLIC_API_URL production
+(
+    cd dashboard
+    v env rm NEXT_PUBLIC_API_URL production --yes 2>/dev/null || true
+    echo "$URL" | v env add NEXT_PUBLIC_API_URL production
+)
 
 echo "[!] Deploye ..."
-"$V" deploy --cwd dashboard --prod --yes
+v deploy --cwd dashboard --prod --yes
 
 echo
 echo "[ok] Deployment abgeschlossen. Deine URL: https://<projekt>.vercel.app"

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useParams } from "next/navigation";
-import { LayoutDashboard, Filter, Settings, ArrowLeft, ShieldAlert, Menu } from "lucide-react";
+import { LayoutDashboard, Filter, Settings, ArrowLeft, ShieldAlert, Menu, UserPlus, CalendarClock, Users, Ticket } from "lucide-react";
 import Link from "next/link";
 import { Sidebar, type SidebarItem } from "@/components/Sidebar";
 import { useI18n } from "@/lib/i18n";
@@ -20,6 +20,10 @@ export default function GuildLayout({ children }: { children: React.ReactNode })
     { href: `${base}/filters`, label: t("nav.filters"), icon: Filter },
     { href: `${base}/settings`, label: t("nav.settings"), icon: Settings },
     { href: `${base}/security`, label: t("nav.security"), icon: ShieldAlert },
+    { href: `${base}/invites`, label: t("nav.invites"), icon: UserPlus },
+    { href: `${base}/panel`, label: t("nav.panel"), icon: Users },
+    { href: `${base}/scheduled`, label: t("nav.scheduled"), icon: CalendarClock },
+    { href: `${base}/tickets`, label: t("nav.tickets"), icon: Ticket },
   ];
 
   return (

@@ -51,6 +51,10 @@ export default function GuildSettings() {
         anti_nuke_enabled: cfg.anti_nuke_enabled,
         anti_spam_config: cfg.anti_spam_config,
         anti_nuke_config: cfg.anti_nuke_config,
+        welcome_channel_id: cfg.welcome_channel_id ? Number(cfg.welcome_channel_id) : null,
+        welcome_message: cfg.welcome_message ?? "",
+        leave_channel_id: cfg.leave_channel_id ? Number(cfg.leave_channel_id) : null,
+        leave_message: cfg.leave_message ?? "",
       }),
     });
     setSaved(true);
@@ -524,6 +528,74 @@ export default function GuildSettings() {
         ) : (
           <p className="py-4 text-center text-sm text-gray-500">{t("settings.antiNukeOffHint")}</p>
         )}
+      </div>
+
+      <div className="card">
+        <h2 className="mb-1 text-lg font-semibold text-white">{t("settings.welcomeTitle")}</h2>
+        <p className="mb-4 text-sm text-gray-400">{t("settings.welcomeDesc")}</p>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div>
+            <label className="label">{t("settings.welcomeChannel")}</label>
+            <select
+              className="input"
+              value={cfg.welcome_channel_id ?? ""}
+              onChange={(e) =>
+                setCfg({
+                  ...cfg,
+                  welcome_channel_id: e.target.value ? e.target.value : null,
+                })
+              }
+            >
+              <option value="">{t("settings.welcomeNone")}</option>
+              {channels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.type === 5 ? "📢 " : "# "}
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">{t("settings.leaveChannel")}</label>
+            <select
+              className="input"
+              value={cfg.leave_channel_id ?? ""}
+              onChange={(e) =>
+                setCfg({
+                  ...cfg,
+                  leave_channel_id: e.target.value ? e.target.value : null,
+                })
+              }
+            >
+              <option value="">{t("settings.welcomeNone")}</option>
+              {channels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.type === 5 ? "📢 " : "# "}
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">{t("settings.welcomeMessage")}</label>
+            <textarea
+              className="input resize-none"
+              rows={2}
+              value={cfg.welcome_message ?? ""}
+              onChange={(e) => setCfg({ ...cfg, welcome_message: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="label">{t("settings.leaveMessage")}</label>
+            <textarea
+              className="input resize-none"
+              rows={2}
+              value={cfg.leave_message ?? ""}
+              onChange={(e) => setCfg({ ...cfg, leave_message: e.target.value })}
+            />
+          </div>
+        </div>
+        <p className="mt-3 text-xs text-gray-500">{t("settings.welcomePlaceholders")}</p>
       </div>
 
       <div className="flex justify-end">

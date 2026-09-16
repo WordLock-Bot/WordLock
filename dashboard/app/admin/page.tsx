@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Server, Users, AlertTriangle, Bug, Activity, Clock, Rocket, BellOff, BellRing } from "lucide-react";
+import { Server, Users, AlertTriangle, Bug, Activity, Clock, Rocket, BellOff, BellRing, Database, Trash2, MessageSquare, UserPlus } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AdminOverview, MonitorStatus } from "@/lib/types";
+import type { AdminOverview, AdminInvites, MonitorStatus, Me } from "@/lib/types";
 import { StatCard } from "@/components/StatCard";
 import { useI18n } from "@/lib/i18n";
 
@@ -11,11 +11,16 @@ export default function AdminOverview() {
   const { t, locale } = useI18n();
   const [data, setData] = useState<AdminOverview | null>(null);
   const [monitor, setMonitor] = useState<MonitorStatus | null>(null);
+  const [invites, setInvites] = useState<AdminInvites | null>(null);
   const [muting, setMuting] = useState(false);
+  const [role, setRole] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     api<AdminOverview>("/api/admin/overview").then(setData);
+    api<AdminInvites>("/api/admin/invites").then(setInvites).catch(() => setInvites(null));
     api<MonitorStatus>("/api/admin/monitor").then(setMonitor).catch(() => setMonitor(null));
+    api<Me>("/api/auth/me").then((me) => setRole(me.role)).catch(() => {});
   }, []);
 
   const toggleMute = async () => {
@@ -29,6 +34,18 @@ export default function AdminOverview() {
       setMonitor((m) => (m ? { ...m, muted: res.muted } : m));
     } finally {
       setMuting(false);
+    }
+  };
+
+  const resetDb = async () => {
+    if (!window.confirm(t("adminOv.resetDbConfirm"))) return;
+    setResetting(true);
+    try {
+      await api("/api/admin/db/reset", { method: "POST" });
+      window.location.reload();
+    } catch (e) {
+      alert((e as Error).message);
+      setResetting(false);
     }
   };
 
@@ -64,6 +81,16 @@ export default function AdminOverview() {
             </div>
           </div>
         </div>
+        {role === "owner" && (
+          <button onClick={resetDb} disabled={resetting} className="btn-danger">
+            {resetting ? (
+              <Database className="h-4 w-4 animate-pulse" />
+            ) : (
+              <Trash2 className="h-4 w-4" />
+            )}
+            {t("adminOv.resetDb")}
+          </button>
+        )}
       </header>
 
       {data.maintenance_mode && (
@@ -134,6 +161,8 @@ export default function AdminOverview() {
         <StatCard label={t("adminOv.activeUsers")} value={data.active_users} icon={Users} tone="green" />
         <StatCard label={t("adminOv.violationsToday")} value={data.violations_today} icon={AlertTriangle} tone="yellow" />
         <StatCard label={t("adminOv.errors")} value={data.error_count} icon={Bug} tone="red" />
+        <StatCard icon={MessageSquare} label={t("adminOv.openTickets")} value={data.open_tickets ?? 0} tone="default" />
+        <StatCard label={t("admin.invites")} value={invites?.total ?? 0} icon={UserPlus} tone="green" />
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
