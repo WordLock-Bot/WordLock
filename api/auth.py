@@ -163,18 +163,23 @@ async def current_user(request: Request):
     return user
 
 
-def _effective_role(user: dict) -> str:
+async def _effective_role(user: dict, db) -> str:
     role = user.get("role") or "user"
     if discord_id := user.get("discord_id"):
         if discord_id in _whitelist():
             if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["owner"]:
                 return "owner"
+        # Panel access granted through the team management (Stammbaum).
+        if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["moderator"]:
+            if await db.team_panel_access(discord_id):
+                return "moderator"
     return role
 
 
 async def require_admin(request: Request):
     user = await current_user(request)
-    role = _effective_role(user)
+    db = request.app.state.db
+    role = await _effective_role(user, db)
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["moderator"]:
         raise HTTPException(status_code=403, detail="Forbidden")
     user["role"] = role
@@ -183,7 +188,8 @@ async def require_admin(request: Request):
 
 async def require_developer(request: Request):
     user = await current_user(request)
-    role = _effective_role(user)
+    db = request.app.state.db
+    role = await _effective_role(user, db)
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["developer"]:
         raise HTTPException(status_code=403, detail="Developer access required")
     user["role"] = role
@@ -192,7 +198,8 @@ async def require_developer(request: Request):
 
 async def require_owner(request: Request):
     user = await current_user(request)
-    role = _effective_role(user)
+    db = request.app.state.db
+    role = await _effective_role(user, db)
     if role != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     user["role"] = role

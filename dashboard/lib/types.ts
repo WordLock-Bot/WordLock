@@ -256,6 +256,8 @@ export interface TeamMember {
   role: string;
   parent_id: number | null;
   sort_order: number;
+  discord_id: number | null;
+  panel_access: boolean;
   created_at: string;
   updated_at: string;
 }

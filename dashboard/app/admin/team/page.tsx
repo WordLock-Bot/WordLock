@@ -6,7 +6,14 @@ import { api } from "@/lib/api";
 import type { TeamMember } from "@/lib/types";
 import { useI18n } from "@/lib/i18n";
 
-const EMPTY = { name: "", role: "", parent_id: null as number | null, sort_order: 0 };
+const EMPTY = {
+  name: "",
+  role: "",
+  parent_id: null as number | null,
+  sort_order: 0,
+  discord_id: null as number | null,
+  panel_access: false,
+};
 
 export default function AdminTeam() {
   const { t } = useI18n();
@@ -14,6 +21,8 @@ export default function AdminTeam() {
   const [form, setForm] = useState(EMPTY);
   const [editing, setEditing] = useState<number | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const reload = () => api<TeamMember[]>("/api/admin/team").then(setMembers);
 
@@ -24,21 +33,48 @@ export default function AdminTeam() {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg(null);
+    setErr(null);
     if (!form.name.trim()) return;
-    await api(editing ? `/api/admin/team/${editing}` : "/api/admin/team", {
-      method: editing ? "PATCH" : "POST",
-      body: JSON.stringify(form),
-    });
-    setForm(EMPTY);
-    setEditing(null);
-    setMsg(t("adTeam.saved"));
-    await reload();
+    setBusy(true);
+    try {
+      await api(editing ? `/api/admin/team/${editing}` : "/api/admin/team", {
+        method: editing ? "PUT" : "POST",
+        body: JSON.stringify(form),
+      });
+      setForm(EMPTY);
+      setEditing(null);
+      setMsg(t("adTeam.saved"));
+      await reload();
+    } catch (e) {
+      setErr((e as Error).message || t("webticket.errorGeneric"));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const startEdit = (m: TeamMember) => {
     setEditing(m.id);
-    setForm({ name: m.name, role: m.role, parent_id: m.parent_id, sort_order: m.sort_order });
+    setForm({
+      name: m.name,
+      role: m.role,
+      parent_id: m.parent_id,
+      sort_order: m.sort_order,
+      discord_id: m.discord_id,
+      panel_access: m.panel_access,
+    });
+  };
+
+  const toggleAccess = async (m: TeamMember) => {
+    const next = !m.panel_access;
+    try {
+      await api(`/api/admin/team/${m.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ panel_access: next }),
+      });
+      await reload();
+    } catch {
+      /* keep current state on failure */
+    }
   };
 
   const remove = async (m: TeamMember) => {
@@ -109,6 +145,34 @@ export default function AdminTeam() {
               onChange={(e) => setForm({ ...form, sort_order: Number(e.target.value) })}
             />
           </div>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="label">{t("adTeam.discordId")}</label>
+            <input
+              className="input w-56"
+              inputMode="numeric"
+              value={form.discord_id ?? ""}
+              placeholder={t("adTeam.discordIdPlaceholder")}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  discord_id: e.target.value ? Number(e.target.value) : null,
+                })
+              }
+            />
+            <p className="mt-1 text-xs text-gray-500">{t("adTeam.discordIdDesc")}</p>
+          </div>
+          <label className="flex cursor-pointer items-center gap-2 pb-1">
+            <input
+              type="checkbox"
+              checked={form.panel_access}
+              onChange={(e) => setForm({ ...form, panel_access: e.target.checked })}
+              className="h-4 w-4 accent-blurple"
+            />
+            <span className="text-sm font-medium text-gray-200">{t("adTeam.panelAccess")}</span>
+          </label>
+          <p className="pb-1 text-xs text-gray-500">{t("adTeam.panelAccessDesc")}</p>
           <div className="flex gap-2">
             <button type="submit" className="btn-primary">
               {editing ? <Save className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
@@ -123,6 +187,12 @@ export default function AdminTeam() {
         </div>
       </form>
 
+      {err && (
+        <div className="rounded-lg bg-wordlock-red/10 px-4 py-3 text-sm text-wordlock-red">
+          {err}
+        </div>
+      )}
+
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -131,6 +201,7 @@ export default function AdminTeam() {
               <th className="pb-2">{t("adTeam.thRole")}</th>
               <th className="pb-2">{t("adTeam.thParent")}</th>
               <th className="pb-2">{t("adTeam.thOrder")}</th>
+              <th className="pb-2">{t("adTeam.thAccess")}</th>
               <th className="pb-2 text-right">{t("adTeam.thActions")}</th>
             </tr>
           </thead>
@@ -148,6 +219,20 @@ export default function AdminTeam() {
                 </td>
                 <td className="py-3 font-mono text-xs text-gray-400">{m.sort_order}</td>
                 <td className="py-3">
+                  <button
+                    onClick={() => toggleAccess(m)}
+                    title={m.discord_id ? t("adTeam.panelAccessDesc") : t("adTeam.discordIdDesc")}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium transition ${
+                      m.panel_access
+                        ? "bg-wordlock-green/15 text-wordlock-green hover:bg-wordlock-green/25"
+                        : "bg-white/10 text-gray-400 hover:bg-white/15"
+                    }`}
+                  >
+                    <span className={`h-2 w-2 rounded-full ${m.panel_access ? "bg-wordlock-green" : "bg-gray-500"}`} />
+                    {m.panel_access ? t("common.yes") : t("common.no")}
+                  </button>
+                </td>
+                <td className="py-3">
                   <div className="flex justify-end gap-2">
                     <button onClick={() => startEdit(m)} className="btn-secondary px-2 py-1 text-xs">
                       {t("common.edit")}
@@ -161,7 +246,7 @@ export default function AdminTeam() {
             ))}
             {members.length === 0 && (
               <tr>
-                <td colSpan={5} className="py-10 text-center text-gray-500">
+                <td colSpan={6} className="py-10 text-center text-gray-500">
                   {t("adTeam.empty")}
                 </td>
               </tr>

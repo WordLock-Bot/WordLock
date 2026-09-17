@@ -728,12 +728,13 @@ class Database:
     async def set_ticket_config(self, guild_id: int, **fields: Any) -> None:
         if not fields:
             return
-        cols = ", ".join(f"{k} = ${i + 1}" for i, k in enumerate(fields))
+        cols = ", ".join(fields.keys())
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(fields)))
         values = [json.dumps(v) if isinstance(v, (dict, list)) else v for v in fields.values()]
         await self.execute(
             f"""
             INSERT INTO ticket_config (guild_id, {cols})
-            VALUES (${len(fields) + 1}, {", ".join(f"${i + 1}" for i in range(len(fields)))})
+            VALUES (${len(fields) + 1}, {placeholders})
             ON CONFLICT (guild_id) DO UPDATE SET
                 {", ".join(f"{k} = EXCLUDED.{k}" for k in fields)},
                 updated_at = now()
@@ -764,12 +765,13 @@ class Database:
     async def set_verify_config(self, guild_id: int, **fields: Any) -> None:
         if not fields:
             return
-        cols = ", ".join(f"{k} = ${i + 1}" for i, k in enumerate(fields))
+        cols = ", ".join(fields.keys())
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(fields)))
         values = list(fields.values()) + [guild_id]
         await self.execute(
             f"""
             INSERT INTO verify_config (guild_id, {cols})
-            VALUES (${len(fields) + 1}, {", ".join(f"${i + 1}" for i in range(len(fields)))})
+            VALUES (${len(fields) + 1}, {placeholders})
             ON CONFLICT (guild_id) DO UPDATE SET
                 {", ".join(f"{k} = EXCLUDED.{k}" for k in fields)},
                 updated_at = now()

@@ -657,8 +657,13 @@ async def add_team_member(payload: dict, request: Request, _user=Depends(auth.re
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     sort_order = int(payload.get("sort_order") or 0)
+    discord_id = payload.get("discord_id")
+    if discord_id:
+        discord_id = int(discord_id)
+    panel_access = bool(payload.get("panel_access"))
     member = await db.add_team_member(
-        name, role, payload.get("parent_id"), sort_order
+        name, role, payload.get("parent_id"), sort_order,
+        discord_id=discord_id, panel_access=panel_access,
     )
     await db.add_log("admin", f"Added team member {name}", "info")
     return member
@@ -670,7 +675,8 @@ async def update_team_member(
 ):
     db = get_db(request)
     fields = {
-        k: v for k, v in payload.items() if k in {"name", "role", "parent_id", "sort_order"}
+        k: v for k, v in payload.items()
+        if k in {"name", "role", "parent_id", "sort_order", "discord_id", "panel_access"}
     }
     if "name" in fields:
         fields["name"] = (fields["name"] or "").strip()
@@ -678,6 +684,10 @@ async def update_team_member(
             raise HTTPException(status_code=400, detail="name is required")
     if "sort_order" in fields:
         fields["sort_order"] = int(fields["sort_order"] or 0)
+    if "discord_id" in fields:
+        fields["discord_id"] = int(fields["discord_id"]) if fields["discord_id"] else None
+    if "panel_access" in fields:
+        fields["panel_access"] = bool(fields["panel_access"])
     if fields.get("parent_id") == member_id:
         raise HTTPException(status_code=400, detail="Member cannot be its own parent")
     if not fields:

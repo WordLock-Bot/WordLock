@@ -260,18 +260,18 @@ async def create_my_ticket(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return {"error": "Invalid JSON body"}
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     ticket_type = body.get("type", "contact")
     subject = (body.get("subject") or "").strip()
     message = (body.get("message") or "").strip()
 
     if not subject:
-        return {"error": "subject is required"}
+        raise HTTPException(status_code=400, detail="subject is required")
     if not message:
-        return {"error": "message is required"}
+        raise HTTPException(status_code=400, detail="message is required")
     if ticket_type not in ("contact", "bug", "feature", "support"):
-        return {"error": "Invalid type"}
+        raise HTTPException(status_code=400, detail="Invalid type")
 
     guild_id = body.get("guild_id")
     email = (body.get("sender_email") or "").strip() or f"{user['discord_id']}@wordlock.local"
@@ -307,14 +307,14 @@ async def reply_my_ticket(ticket_id: int, request: Request):
     if not ticket or ticket.get("sender_id") != user["discord_id"]:
         raise HTTPException(404, "Ticket not found")
     if ticket.get("status") == "closed":
-        return {"error": "ticket is closed"}
+        raise HTTPException(status_code=400, detail="ticket is closed")
     try:
         body = await request.json()
     except Exception:
-        return {"error": "Invalid JSON body"}
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
     content = (body.get("content") or "").strip()
     if not content:
-        return {"error": "content is required"}
+        raise HTTPException(status_code=400, detail="content is required")
     await db.add_ticket_message(
         ticket_id, "user", user.get("username") or "user", content,
     )

@@ -268,7 +268,7 @@ ALTER TABLE servers ADD COLUMN IF NOT EXISTS phishing_action TEXT DEFAULT 'delet
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS phishing_config JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
-ALTER TABLE ticket_config ADD COLUMN IF NOT EXISTS panel_needs_deploy BOOLEAN DEFAULT FALSE;
+
 
 CREATE TABLE IF NOT EXISTS invites (
     guild_id   BIGINT PRIMARY KEY,
@@ -280,13 +280,17 @@ CREATE TABLE IF NOT EXISTS invites (
 );
 
 CREATE TABLE IF NOT EXISTS team_members (
-    id         SERIAL PRIMARY KEY,
-    name       TEXT NOT NULL,
-    role       TEXT NOT NULL DEFAULT '',
-    parent_id  INTEGER REFERENCES team_members(id) ON DELETE SET NULL,
-    sort_order INTEGER DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT now()
+    id            SERIAL PRIMARY KEY,
+    name          TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT '',
+    parent_id     INTEGER REFERENCES team_members(id) ON DELETE SET NULL,
+    sort_order    INTEGER DEFAULT 0,
+    discord_id    BIGINT,
+    panel_access  BOOLEAN DEFAULT FALSE,
+    created_at    TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS discord_id BIGINT;
+ALTER TABLE team_members ADD COLUMN IF NOT EXISTS panel_access BOOLEAN DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS standard_word_overrides (
     guild_id    BIGINT NOT NULL,
     word        TEXT NOT NULL,
@@ -334,6 +338,7 @@ CREATE TABLE IF NOT EXISTS ticket_config (
     created_at           TIMESTAMPTZ DEFAULT now(),
     updated_at           TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE ticket_config ADD COLUMN IF NOT EXISTS panel_needs_deploy BOOLEAN DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS discord_tickets (
     id            SERIAL PRIMARY KEY,
@@ -347,6 +352,10 @@ CREATE TABLE IF NOT EXISTS discord_tickets (
     closed_at     TIMESTAMPTZ,
     closed_by     BIGINT
 );
+ALTER TABLE discord_tickets ADD COLUMN IF NOT EXISTS claimed_by BIGINT;
+ALTER TABLE discord_tickets ADD COLUMN IF NOT EXISTS transcript_id BIGINT;
+ALTER TABLE discord_tickets ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+ALTER TABLE discord_tickets ADD COLUMN IF NOT EXISTS closed_by BIGINT;
 CREATE INDEX IF NOT EXISTS idx_discord_tickets_guild ON discord_tickets (guild_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_discord_tickets_open ON discord_tickets (guild_id, creator_id) WHERE status = 'open';
 
@@ -358,6 +367,8 @@ CREATE TABLE IF NOT EXISTS ticket_transcripts (
     html       TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE ticket_transcripts ADD COLUMN IF NOT EXISTS channel_id BIGINT;
+ALTER TABLE ticket_transcripts ADD COLUMN IF NOT EXISTS html TEXT;
 
 CREATE TABLE IF NOT EXISTS verify_config (
     guild_id             BIGINT PRIMARY KEY,
@@ -398,6 +409,9 @@ CREATE TABLE IF NOT EXISTS tickets (
     created_at    TIMESTAMPTZ DEFAULT now(),
     updated_at    TIMESTAMPTZ DEFAULT now()
 );
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sender_id BIGINT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS guild_id BIGINT;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS assigned_to TEXT;
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at DESC);
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS tickets_enabled BOOLEAN DEFAULT FALSE;
@@ -1248,16 +1262,38 @@ class Database:
     async def list_team(self) -> List[dict]:
         return await self._fetch("SELECT * FROM team_members ORDER BY sort_order, id")
 
+    async def list_team_public(self) -> List[dict]:
+        return await self._fetch(
+            "SELECT id, name, role, parent_id, sort_order "
+            "FROM team_members ORDER BY sort_order, id"
+        )
+
+    async def team_panel_access(self, discord_id: int) -> bool:
+        return bool(
+            await self._fetchval(
+                "SELECT TRUE FROM team_members WHERE discord_id = $1 AND panel_access = TRUE LIMIT 1",
+                discord_id,
+            )
+        )
+
     async def add_team_member(
-        self, name: str, role: str, parent_id: Optional[int], sort_order: int
+        self,
+        name: str,
+        role: str,
+        parent_id: Optional[int],
+        sort_order: int,
+        discord_id: Optional[int] = None,
+        panel_access: bool = False,
     ) -> Optional[dict]:
         return await self._fetchrow(
-            "INSERT INTO team_members (name, role, parent_id, sort_order) "
-            "VALUES ($1, $2, $3, $4) RETURNING *",
+            "INSERT INTO team_members (name, role, parent_id, sort_order, discord_id, panel_access) "
+            "VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
             name,
             role,
             parent_id,
             sort_order,
+            discord_id,
+            panel_access,
         )
 
     async def update_team_member(self, member_id: int, **fields: Any) -> Optional[dict]:
@@ -1358,11 +1394,12 @@ class Database:
     async def set_ticket_config(self, guild_id: int, **fields: Any) -> None:
         if not fields:
             return
-        cols = ", ".join(f"{k} = ${i + 1}" for i, k in enumerate(fields))
+        cols = ", ".join(fields.keys())
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(fields)))
         await self._execute(
             f"""
             INSERT INTO ticket_config (guild_id, {cols})
-            VALUES (${len(fields) + 1}, {", ".join(f"${i + 1}" for i in range(len(fields)))})
+            VALUES (${len(fields) + 1}, {placeholders})
             ON CONFLICT (guild_id) DO UPDATE SET
                 {", ".join(f"{k} = EXCLUDED.{k}" for k in fields)},
                 updated_at = now()
@@ -1392,11 +1429,12 @@ class Database:
     async def set_verify_config(self, guild_id: int, **fields: Any) -> None:
         if not fields:
             return
-        cols = ", ".join(f"{k} = ${i + 1}" for i, k in enumerate(fields))
+        cols = ", ".join(fields.keys())
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(fields)))
         await self._execute(
             f"""
             INSERT INTO verify_config (guild_id, {cols})
-            VALUES (${len(fields) + 1}, {", ".join(f"${i + 1}" for i in range(len(fields)))})
+            VALUES (${len(fields) + 1}, {placeholders})
             ON CONFLICT (guild_id) DO UPDATE SET
                 {", ".join(f"{k} = EXCLUDED.{k}" for k in fields)},
                 updated_at = now()

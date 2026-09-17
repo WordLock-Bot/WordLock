@@ -422,7 +422,7 @@ async def guild_panel_member_remove(guild_id: int, discord_id: int, request: Req
 @router.get("/team")
 async def public_team(request: Request):
     """Public team hierarchy for the landing page (#team)."""
-    return await get_db(request).list_team()
+    return await get_db(request).list_team_public()
 
 
 @router.put("/guilds/{guild_id}")

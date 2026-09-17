@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { MaintenanceBanner } from "@/components/MaintenanceBanner";
 
 export const metadata: Metadata = {
   title: "Privacy Policy — WordLock",
@@ -13,6 +14,7 @@ export default function DatenschutzPage() {
         ← Back to home
       </Link>
       <h1 className="mt-6 text-3xl font-bold text-white">Privacy Policy</h1>
+      <MaintenanceBanner />
 
       <section className="mt-8 space-y-8 text-sm leading-relaxed text-gray-300">
         <div className="card">
